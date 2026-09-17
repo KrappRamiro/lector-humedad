@@ -1,0 +1,22 @@
+.vscode
+.idea
+target
+Cargo.lock
+cfg.toml
+__pycache__
+.DS_Store
+.embuild/
+.vale
+.vale.ini
+components_esp32c3.lock
+
+# Devenv
+.devenv*
+devenv.local.nix
+devenv.local.yaml
+
+# direnv
+.direnv
+
+# pre-commit
+.pre-commit-config.yaml
