@@ -128,6 +128,7 @@ impl<'d, C: AdcChannel> MoistureSensor<'d, C> {
 
 #[cfg(test)]
 mod tests {
+    #[allow(unused_imports)]
     use super::*;
 
     #[test]

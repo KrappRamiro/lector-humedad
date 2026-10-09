@@ -9,7 +9,7 @@ use esp_idf_svc::hal::{
     task::block_on,
 };
 use tm1637_embedded_hal::{
-    Brightness, TM1637, TM1637Builder, formatters::i16_to_4digits, tokens::Async,
+    Brightness, TM1637, TM1637Builder, tokens::Async,
 };
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
