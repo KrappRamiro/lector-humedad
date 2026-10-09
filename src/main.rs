@@ -1,13 +1,43 @@
 mod moisture_sensor;
-use std::{thread, time::Duration};
 
+use embassy_time::{Duration, Timer};
 use esp_idf_svc::hal::{
-    adc::oneshot::AdcDriver, delay::Delay, gpio::PinDriver, peripherals::Peripherals,
+    adc::{oneshot::AdcDriver, AdcChannel},
+    gpio::{Output, PinDriver},
+    peripherals::Peripherals,
+    task::block_on,
 };
-use tm1637_embedded_hal::TM1637Builder;
+use tm1637_embedded_hal::{formatters::i16_to_4digits, tokens::Async, Brightness, TM1637Builder, TM1637};
+use crate::moisture_sensor::MoistureSensor;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
-use crate::moisture_sensor::MoistureSensor;
+
+type TM1637DisplayT = TM1637<4, Async, PinDriver<'static, Output>, PinDriver<'static, Output>, embassy_time::Delay>;
+
+async fn sensor_display_loop<C: AdcChannel>(
+    mut moisture_sensor: MoistureSensor<'_, C>,
+    mut display: TM1637DisplayT,
+) {
+    if let Err(e) = display.init().await {
+        log::error!("failed to init display: {e:?}");
+        return;
+    }
+
+    loop {
+        match moisture_sensor.read() {
+            Ok(percent) => {
+                log::info!("{percent}");
+                let segments = i16_to_4digits(percent as i16);
+                if let Err(e) = display.display_slice(0, &segments).await {
+                    log::error!("failed to write to display: {e:?}");
+                }
+            }
+            Err(e) => log::error!("failed to read sensor: {e:?}"),
+        }
+
+        Timer::after(POLL_INTERVAL).await;
+    }
+}
 
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
@@ -26,9 +56,6 @@ fn main() -> anyhow::Result<()> {
 
     log::info!("Hello, world!");
 
-    // --- Reading Analog input --- //
-    // Please read https://github.com/esp-rs/esp-idf-hal/blob/master/examples/adc_oneshot.rs
-
     // Peripherals::take() , using a singleton, makes sure you dont try to interact with a pin in two different pieces of code
     let peripherals = Peripherals::take()?;
 
@@ -45,14 +72,17 @@ fn main() -> anyhow::Result<()> {
     // - GPIO 20/21 --> UART RX/TX pins
     // See https://www.espboards.dev/blog/esp32-strapping-pins/
     // See https://esp32.com/viewtopic.php?p=83835
+    let moisture_sensor = MoistureSensor::new(peripherals.pins.gpio0, &adc1)?;
 
-    let mut moisture_sensor = MoistureSensor::new(peripherals.pins.gpio0, &adc1)?;
+    // Create a TM1637 instance
+    let tm1637_clk = PinDriver::output(peripherals.pins.gpio5)?;
+    let tm1637_dio = PinDriver::output(peripherals.pins.gpio6)?;
+    // ::<4> is for 4-digit displays
+    let display = TM1637Builder::new(tm1637_clk, tm1637_dio, embassy_time::Delay)
+        .brightness(Brightness::L5)
+        .build_async::<4>();
 
+    block_on(sensor_display_loop(moisture_sensor, display));
 
-    loop {
-        let reading = moisture_sensor.read()?;
-        log::info!("{}", reading);
-
-        thread::sleep(POLL_INTERVAL);
-    }
+    Ok(())
 }
