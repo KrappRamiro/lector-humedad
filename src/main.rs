@@ -1,42 +1,36 @@
 mod moisture_sensor;
 
+use crate::moisture_sensor::MoistureSensor;
 use embassy_time::{Duration, Timer};
 use esp_idf_svc::hal::{
-    adc::{oneshot::AdcDriver, AdcChannel},
+    adc::{AdcChannel, oneshot::AdcDriver},
     gpio::{Output, PinDriver},
     peripherals::Peripherals,
     task::block_on,
 };
-use tm1637_embedded_hal::{formatters::i16_to_4digits, tokens::Async, Brightness, TM1637Builder, TM1637};
-use crate::moisture_sensor::MoistureSensor;
+use tm1637_embedded_hal::{
+    Brightness, TM1637, TM1637Builder, formatters::i16_to_4digits, tokens::Async,
+};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
-type TM1637DisplayT = TM1637<4, Async, PinDriver<'static, Output>, PinDriver<'static, Output>, embassy_time::Delay>;
+type TM1637DisplayT =
+    TM1637<4, Async, PinDriver<'static, Output>, PinDriver<'static, Output>, embassy_time::Delay>;
 
-async fn sensor_display_loop<C: AdcChannel>(
-    mut moisture_sensor: MoistureSensor<'_, C>,
-    mut display: TM1637DisplayT,
+async fn sensor_display<C: AdcChannel>(
+    moisture_sensor: &mut MoistureSensor<'_, C>,
+    display: &mut TM1637DisplayT,
 ) {
-    if let Err(e) = display.init().await {
-        log::error!("failed to init display: {e:?}");
-        return;
-    }
-
-    loop {
-        match moisture_sensor.read() {
-            Ok(percent) => {
-                log::info!("{percent}");
-                let segments = i16_to_4digits(percent as i16);
-                if let Err(e) = display.display_slice(0, &segments).await {
-                    log::error!("failed to write to display: {e:?}");
-                }
+    match moisture_sensor.read() {
+        Ok(percent) => {
+            if let Err(e) = display.options().r_u16_4(percent).display().await {
+                log::error!("failed to write to display: {e:?}");
             }
-            Err(e) => log::error!("failed to read sensor: {e:?}"),
         }
-
-        Timer::after(POLL_INTERVAL).await;
+        Err(e) => log::error!("failed to read sensor: {e:?}"),
     }
+
+    Timer::after(POLL_INTERVAL).await;
 }
 
 fn main() -> anyhow::Result<()> {
@@ -72,17 +66,19 @@ fn main() -> anyhow::Result<()> {
     // - GPIO 20/21 --> UART RX/TX pins
     // See https://www.espboards.dev/blog/esp32-strapping-pins/
     // See https://esp32.com/viewtopic.php?p=83835
-    let moisture_sensor = MoistureSensor::new(peripherals.pins.gpio0, &adc1)?;
+    let mut moisture_sensor = MoistureSensor::new(peripherals.pins.gpio0, &adc1)?;
 
     // Create a TM1637 instance
     let tm1637_clk = PinDriver::output(peripherals.pins.gpio5)?;
     let tm1637_dio = PinDriver::output(peripherals.pins.gpio6)?;
     // ::<4> is for 4-digit displays
-    let display = TM1637Builder::new(tm1637_clk, tm1637_dio, embassy_time::Delay)
+    let mut display = TM1637Builder::new(tm1637_clk, tm1637_dio, embassy_time::Delay)
         .brightness(Brightness::L5)
         .build_async::<4>();
 
-    block_on(sensor_display_loop(moisture_sensor, display));
+    block_on(display.init()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-    Ok(())
+    loop {
+        block_on(sensor_display(&mut moisture_sensor, &mut display));
+    }
 }
