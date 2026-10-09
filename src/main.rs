@@ -1,7 +1,10 @@
 mod moisture_sensor;
 use std::{thread, time::Duration};
 
-use esp_idf_svc::hal::{adc::oneshot::AdcDriver, peripherals::Peripherals};
+use esp_idf_svc::hal::{
+    adc::oneshot::AdcDriver, delay::Delay, gpio::PinDriver, peripherals::Peripherals,
+};
+use tm1637_embedded_hal::TM1637Builder;
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 use crate::moisture_sensor::MoistureSensor;
@@ -35,7 +38,16 @@ fn main() -> anyhow::Result<()> {
     // see https://docs.espressif.com/projects/esp-chip-errata/en/latest/esp32c3/03-errata-description/index.html
     let adc1 = AdcDriver::new(peripherals.adc1)?;
 
+    // When choosing pins, remember:
+    // - GPIO 0-4   --> ADC pins
+    // - GPIO 9     --> Strapping pin (BOOT) (TRY TO AVOID, see links)
+    // - GPIO 2,8   --> Strapping pin (BOOT) (TRY TO AVOID, see links)
+    // - GPIO 20/21 --> UART RX/TX pins
+    // See https://www.espboards.dev/blog/esp32-strapping-pins/
+    // See https://esp32.com/viewtopic.php?p=83835
+
     let mut moisture_sensor = MoistureSensor::new(peripherals.pins.gpio0, &adc1)?;
+
 
     loop {
         let reading = moisture_sensor.read()?;

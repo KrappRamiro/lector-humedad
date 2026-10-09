@@ -2,9 +2,9 @@
 name = "lector-humedad"
 version = "0.1.0"
 authors = ["Ramiro Krapp <contact@krapp.dev>"]
-edition = "2021"
+edition = "2024"
 resolver = "2"
-rust-version = "1.82"
+rust-version = "1.99"
 
 [[bin]]
 name = "lector-humedad"
@@ -27,6 +27,7 @@ esp-idf-svc = { version = "0.53", features = ["critical-section", "embassy-time-
 # Remove `generic-queue-8` if you plan to use `embassy-time` WITH `embassy-executor`
 embassy-time = { version = "0.5", features = ["generic-queue-8"] }
 anyhow = "1.0.104"
+tm1637-embedded-hal = "0.5.2"
 
 [build-dependencies]
 embuild = "0.33"
