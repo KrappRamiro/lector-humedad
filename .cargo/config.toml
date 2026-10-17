@@ -17,3 +17,6 @@ ESP_IDF_TOOLS_INSTALL_DIR = "global"
 # Uncomment this if you have moved the target dir by setting CARGO_TARGET_DIR or similar.
 # Required for now due to embuild limitations.
 #CARGO_WORKSPACE_DIR = { value = "", relative = true }
+
+[alias]
+test-core = "test -p fak-core --target x86_64-unknown-linux-gnu"

@@ -1,10 +1,17 @@
+[workspace]
+members = ["fak-core"] # Lista de crates que son miembros de este proyecto. La ruta tiene que ser relativa a la raiz.
+
+[workspace.package]
+edition = "2024"
+rust-version = "1.99"
+
 [package]
 name = "lector-humedad"
 version = "0.1.0"
 authors = ["Ramiro Krapp <contact@krapp.dev>"]
-edition = "2024"
+edition.workspace = true
 resolver = "2"
-rust-version = "1.99"
+rust-version.workspace = true
 
 [[bin]]
 name = "lector-humedad"

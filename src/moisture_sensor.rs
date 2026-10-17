@@ -1,8 +1,7 @@
 use esp_idf_svc::hal::{
     adc::{
-        attenuation,
-        oneshot::{config::AdcChannelConfig, AdcChannelDriver, AdcDriver},
-        AdcChannel,
+        AdcChannel, attenuation,
+        oneshot::{AdcChannelDriver, AdcDriver, config::AdcChannelConfig},
     },
     gpio::ADCPin,
 };

@@ -1,7 +1,6 @@
 .vscode
 .idea
 target
-Cargo.lock
 cfg.toml
 __pycache__
 .DS_Store

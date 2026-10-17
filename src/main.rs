@@ -8,9 +8,7 @@ use esp_idf_svc::hal::{
     peripherals::Peripherals,
     task::block_on,
 };
-use tm1637_embedded_hal::{
-    Brightness, TM1637, TM1637Builder, tokens::Async,
-};
+use tm1637_embedded_hal::{Brightness, TM1637, TM1637Builder, tokens::Async};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
 
