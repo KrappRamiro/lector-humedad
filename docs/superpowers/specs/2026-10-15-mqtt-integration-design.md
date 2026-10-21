@@ -28,8 +28,25 @@ Sources this design follows:
   `std-training/intro/http-client`: WiFi setup and configuration patterns.
 
 Locked versions this design was checked against: `esp-idf-svc` commit
-`d42a678`, `esp-idf-hal` commit `0d16dca`, ESP-IDF v5.5.3, `embassy-time`
-0.5.1, `embassy-sync` 0.8.0, `embassy-futures` 0.1.2.
+`d42a678`, `esp-idf-hal` commit `0d16dca`, `esp-idf-sys` commit `a6357d4`,
+ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync`
+0.8.0, `embassy-futures` 0.1.2.
+
+Since ESP-IDF v6.0, the MQTT C library (esp-mqtt) is no longer part of
+ESP-IDF. It's the separate `espressif/mqtt` component from Espressif's
+component registry, with its own version (see
+[Build configuration](#build-configuration)). Citations of esp-mqtt files
+refer to its `v1.1.0` tag. The design was first checked against ESP-IDF
+v5.5.3, which bundled esp-mqtt commit `6af4446`. Every behavior it relies on
+is the same in `v1.1.0` except one: reaching the broker's inflight limit now
+queues the message instead of failing the publish (see
+[The MQTT thread](#the-mqtt-thread)).
+
+Before moving to a newer `espressif/mqtt` version, re-check the
+[`messageExpiry`](#messageexpiry) claims and the esp-mqtt list in
+[section 7](#7-open-verification-items) against the new tag. The SAFETY
+argument depends on esp-mqtt internals, such as when the property pointer is
+cleared, and those now change on their own release cycle.
 
 ## 1. Scope
 
@@ -205,7 +222,7 @@ flowchart LR
     subgraph mqtt["MQTT thread"]
         PUB["set property,<br/>blocking publish"]
     end
-    subgraph idf["ESP-IDF's MQTT task"]
+    subgraph idf["esp-mqtt's task"]
         NET["network, reconnects"]
         CB["event callback"]
     end
@@ -219,10 +236,12 @@ flowchart LR
 
 Why a dedicated thread:
 
-- ESP-IDF's MQTT task holds the client's API lock while it reconnects: DNS
-  (which has no timeout, `esp-tls/esp_tls.c:221`), the TCP connection, and
-  waiting for the broker's CONNACK, the last two each limited by
-  `network_timeout` (`mqtt_client.c`, `esp_mqtt_task`). Every client call, including
+- esp-mqtt's task holds the client's API lock while it reconnects
+  (`mqtt_client.c:1982`): DNS, the TCP connection, and waiting for the
+  broker's CONNACK. DNS (`esp-tls/esp_tls.c:247`) has no timeout the caller
+  can set, but lwIP gives up after about 7 seconds per configured DNS server
+  (four tries, `dns.c:1183-1210`). The TCP connection and the CONNACK are
+  each limited by `network_timeout` (`mqtt_client.c:2029-2041`). Every client call, including
   `esp_mqtt5_client_set_publish_property`, waits for that lock. If our executor
   made those calls, a reconnect attempt would freeze the sensor, the display,
   and the WiFi monitor. On the MQTT thread, only that thread waits.
@@ -309,9 +328,9 @@ mqtt5_connection_property: Some(Mqtt5ConnectionPropertyConfig {
 ```
 
 `outbox_limit` is deliberately not set. Its unit is bytes, and exceeding it
-makes the C publish return early (`mqtt_client.c:2177-2183`), which is one of
+makes the C publish return early (`mqtt_client.c:2606-2611`), which is one of
 the paths in [`messageExpiry`](#messageexpiry). The outbox can't grow without
-bound anyway: ESP-IDF expires queued messages after
+bound anyway: esp-mqtt expires queued messages after
 `CONFIG_MQTT_OUTBOX_EXPIRED_TIMEOUT_MS` (30 s, adjustable only when
 `MQTT_USE_CUSTOM_CONFIG` is enabled). So during an outage
 longer than 30 seconds, queued QoS 1 readings are dropped. That's acceptable,
@@ -350,13 +369,13 @@ lives in one method.
 Stack and priority:
 
 - 6144 bytes matches ESP-IDF's own MQTT task, which does the same kind of work
-  (`mqtt_config.h:48`). The callback can also run on this thread (see
+  (`mqtt_config.h:50-53`). The callback can also run on this thread (see
   [the event callback](#the-event-callback)), so its frames count too. Check
   the high-water mark on the board and adjust.
 - `Builder::stack_size` overrides `CONFIG_PTHREAD_TASK_STACK_SIZE_DEFAULT`
   (`pthread.c:366`).
 - The thread gets the pthread default priority, 5 (`pthread/Kconfig:6`). That's
-  the same as ESP-IDF's MQTT task and higher than the main task (1). That's
+  the same as esp-mqtt's task and higher than the main task (1). That's
   fine, because the thread is blocked in `recv()` almost all the time.
 
 `new_cb` starts the client immediately (`client.rs:589`), so `Connected` can
@@ -376,13 +395,19 @@ Requests carry owned data (`String`), because they cross threads.
 ### The event callback
 
 `new_cb` requires `F: FnMut(EspMqttEvent) + Send + 'static`. The client's
-event loop has no task of its own (`mqtt_client.c:889`), so the callback runs
-on whichever task fires the event, always with the client's API lock held:
+event loop has no task of its own (`mqtt_client.c:1045-1049`), so the callback
+runs on whichever task fires the event, always with the client's API lock
+held:
 
-- usually ESP-IDF's MQTT task (`run_event_loop`);
+- usually esp-mqtt's task;
 - **the MQTT thread itself**, when one of its publishes fails to write to the
   socket: the C publish calls `esp_mqtt_abort_connection`
-  (`mqtt_client.c:2216-2218`), which fires `Disconnected` right there.
+  (`mqtt_client.c:2652-2653`), which fires `Disconnected` right there.
+
+Both paths go through `esp_mqtt_dispatch_event`, which posts the event and
+runs the handlers immediately on the calling task (`mqtt_client.c:1267-1275`).
+`CONFIG_MQTT_EVENT_QUEUE_SIZE` only queues custom events posted with
+`esp_mqtt_dispatch_custom_event`, which this design doesn't use.
 
 The API lock is a recursive mutex held on both paths, so the callback is never
 called from two tasks at once. But it means the callback must never block and
@@ -409,21 +434,23 @@ move |event: EspMqttEvent| match event.payload() {
 - **`CONNECTED`** is an `embassy-sync` `Signal`: a single thread-safe "this
   happened" flag, where the latest signal wins. `signal()` never blocks.
   `CriticalSectionRawMutex` is a real cross-task lock on ESP-IDF, which is what
-  makes it safe to set from ESP-IDF's thread.
+  makes it safe to set from esp-mqtt's task.
 - **`Online` on every `Connected`** means the board is marked online after
   every reconnect, including the first one at boot. A board marked offline by
   its Last Will during an outage gets marked online again.
 - **Errors:** `EventPayload::Error` always carries a placeholder `ESP_FAIL`
   (`client.rs:1089`, marked `TODO` upstream), so it says nothing useful. The
-  real reason, such as "bad username or password" (`mqtt_client.c:816`) or an
+  real reason, such as "bad username or password" (`mqtt_client.c:973`) or an
   MQTT5 reason code, is logged by the C library itself. The Rust log line is
-  only a marker next to it.
+  only a marker next to it. esp-mqtt 1.1.0 also puts the reason code in the
+  event (`reason_code`, `mqtt_client.h:235`), but `esp-idf-svc` `d42a678`
+  doesn't expose it.
 - `try_send` returns immediately. If the channel is full, the request is
   dropped and logged.
 
 This avoids the boot deadlock found in the first review. The built-in
 `EspAsyncMqttConnection` hands each event over with `Channel::share`
-(`src/private/zerocopy.rs`), which blocks ESP-IDF's MQTT task until the
+(`src/private/zerocopy.rs`), which blocks esp-mqtt's task until the
 receiver calls `next()`. This design doesn't use `EspAsyncMqttConnection`.
 
 ### Waiting for the first connection
@@ -479,15 +506,26 @@ Every publish is QoS 1 and retained. The `online` payload takes `ts` from
 
 - **If the setter fails, the publish is skipped.** The setter only fails when
   the protocol isn't MQTT5 or the topic alias is too large
-  (`mqtt5_client.c:426-437`), both practically impossible here. But publishing
+  (`mqtt5_client.c:513-526`), both practically impossible here. But publishing
   anyway would use the leftover pointer: an `online` message could go out with
   the 180-second expiry and vanish from the broker after 3 minutes. The thread
   returns `!`, so it can't use `?`: it logs the error and skips that publish.
 - **Publishing while disconnected isn't an error.** With the default
   `CONFIG_MQTT_SKIP_PUBLISH_IF_DISCONNECTED=n`, a QoS 1 publish while
   disconnected builds the packet (using and clearing the property pointer),
-  queues it in the outbox, and returns `Ok` (`mqtt_client.c:2153-2205`). It's
+  queues it in the outbox, and returns `Ok` (`mqtt_client.c:2613-2633`). It's
   resent after reconnecting, or dropped once it's older than 30 seconds.
+- **Reaching the broker's inflight limit isn't an error either.** An MQTT5
+  broker announces how many unacknowledged QoS 1 messages it accepts at once
+  (Receive Maximum). When that many are in flight, a publish builds the
+  packet (using and clearing the property pointer), queues it in the outbox,
+  and returns `Ok` without sending it yet (`mqtt_client.c:2637-2643`, new in
+  esp-mqtt `v1.1.0`). esp-mqtt's task sends it once the broker acknowledges
+  an earlier message (`mqtt_client.c:2079-2108`), or drops it once it's older
+  than 30 seconds (`mqtt_client.c:1920-1940`). At one reading a minute this
+  should practically never happen. Before `v1.1.0`, the same limit made the
+  publish fail early and left the property pointer in place, which the
+  setter-before-every-publish rule already covered.
 - **A failed socket write isn't a lost reading.** When connected, the C
   publish writes to the socket right away. If that write fails, it returns an
   error, but the QoS 1 message stays in the outbox and is resent after
@@ -495,10 +533,10 @@ Every publish is QoS 1 and retained. The `online` payload takes `ts` from
 
 ### `messageExpiry`
 
-`EspMqttClient::publish` takes only topic, QoS, retain, and payload. ESP-IDF's
-C library adds per-message properties through
+`EspMqttClient::publish` takes only topic, QoS, retain, and payload. The
+esp-mqtt C library adds per-message properties through
 `esp_mqtt5_client_set_publish_property` (`mqtt5_client.h`). How it behaves
-(`mqtt5_client.c:418-440`, `mqtt_client.c:2095-2185`):
+(`mqtt5_client.c:503-531`, `mqtt_client.c:2500-2633`):
 
 - It stores a **pointer** to the caller's struct, not a copy, and the setter
   dereferences it, so `NULL` can't be used to clear it.
@@ -522,11 +560,12 @@ The MQTT thread's rules make it sound:
 - **The setter runs before every publish.** Each publish gets the right
   properties no matter what the previous one left behind. `online` gets
   `online_props` (expiry 0, which isn't encoded on the wire,
-  `lib/mqtt5_msg.c:753`).
+  `lib/mqtt5_msg.c:1096-1099`).
 - **Nothing else reads the pointer.** The only reader is `make_publish`
-  (`mqtt_client.c:2101`), reached only through publish calls. Outbox resends
-  reuse already-built packets, the will is built into the CONNECT packet, and
-  `esp_mqtt_client_destroy` doesn't touch it (`mqtt5_client.c:313-325`).
+  (`mqtt_client.c:2510`, cleared at `2514`), reached only through publish
+  calls. Outbox resends reuse already-built packets, the will is built into
+  the CONNECT packet, and `esp_mqtt_client_destroy` doesn't touch it
+  (`mqtt5_client.c:392-405`).
 
 Each of the two `unsafe` setter calls carries a SAFETY comment that names the
 struct it passes. The reading call:
@@ -900,7 +939,8 @@ pub struct Config {
 - `sntp_server` is optional. Without it, the board uses `0.pool.ntp.org`,
   the same server `EspSntp::new_default()` uses. Set it to a hostname or an
   IP address to use a local SNTP server instead. An IP address skips DNS,
-  because lwIP's DNS lookup returns IP literals directly (`dns.c:1766`).
+  because lwIP's DNS lookup returns IP literals directly (`dns.c:1798` in
+  ESP-IDF v6.1's lwIP).
 - A committed `cfg.toml.example` shows the expected keys.
 - `toml_cfg` needs the same `Config` struct declared in `build.rs` too, as in
   `std-training`.
@@ -1079,10 +1119,32 @@ pub fn fail_and_restart(reason: &anyhow::Error) -> ! {
     (`esp-idf-svc` `d42a678`, `esp-idf-hal` `0d16dca`, `esp-idf-sys` at its
     locked commit). Without a `rev`, `cargo update` moves them to their latest
     commit, which is the drift `CLAUDE.md` warns about.
+  - Add the MQTT C library as a remote component:
+
+    ```toml
+    [[package.metadata.esp-idf-sys.extra_components]]
+    remote_component = { name = "espressif/mqtt", version = "1.1.0" }
+    ```
+
+    ESP-IDF v6 no longer ships esp-mqtt. `esp-idf-sys` downloads it from
+    the component registry, and `esp-idf-svc` compiles its `mqtt` module only
+    when the component is present (`esp_idf_comp_espressif__mqtt_enabled`,
+    `src/lib.rs:90`). Without this block, `esp_idf_svc::mqtt` doesn't exist,
+    and the build fails with `unresolved import esp_idf_svc::mqtt`, an error
+    that doesn't mention the missing component.
+  - The component version is pinned for the same reason as the `rev`s: a
+    range like `"1.*"` moves to each new 1.x release. `esp-idf-sys` writes
+    the string unchanged into `idf_component.yml`
+    (`build/native/cargo_driver/config.rs:185`), and the component manager
+    reads a bare `"1.1.0"` as exactly 1.1.0 (checked with its
+    `idf_component_tools.semver.SimpleSpec`).
 - `sdkconfig.defaults`: add `CONFIG_MQTT_PROTOCOL_5=y`. Without it,
-  `MqttProtocolVersion::V5` and the MQTT5 C functions don't exist.
+  `MqttProtocolVersion::V5` and the MQTT5 C functions don't exist. The option
+  is defined in the component's `Kconfig` (default `n` in 1.1.0).
 - `.gitignore`: `cfg.toml` is already ignored. (`Cargo.lock` is committed by
-  the workspace split.)
+  the workspace split.) The component manager's lock file,
+  `components_esp32c3.lock`, is ignored too, so the exact version in
+  `Cargo.toml` is the only thing that pins `espressif/mqtt`.
 
 ## 6. Errors and logging
 
@@ -1150,7 +1212,7 @@ The firmware logs through the `log` crate's macros, with
 doesn't log ([workspace split](2026-10-17-workspace-split-design.md),
 section 4).
 
-How filtering works (`esp-idf-svc` `src/log.rs`, ESP-IDF v5.5.3
+How filtering works (`esp-idf-svc` `src/log.rs`, ESP-IDF v6.1
 `components/log`):
 
 - `init_from_esp_idf` sets the `log` crate's maximum level to
@@ -1217,10 +1279,10 @@ decision before adapting the code.
 
 | # | Item | Why it matters |
 |---|---|---|
-| 1 | The binding for `esp_mqtt5_client_set_publish_property` is generated after `CONFIG_MQTT_PROTOCOL_5=y` | Expected: `esp-idf-sys` (`a6357d4`, `bindings.h:406-408`) includes `mqtt5_client.h` under that option, and the binding structs derive `Default`. Needs one build to confirm. |
+| 1 | The binding for `esp_mqtt5_client_set_publish_property` is generated after `CONFIG_MQTT_PROTOCOL_5=y` | Expected: `esp-idf-sys` (`a6357d4`, `bindings.h:405-408`) includes `mqtt5_client.h` under that option when either `ESP_IDF_COMP_MQTT_ENABLED` (ESP-IDF v5) or `ESP_IDF_COMP_ESPRESSIF__MQTT_ENABLED` (the v6 remote component) is set, and the binding structs derive `Default`. The same build is the first time `esp-idf-svc`'s `mqtt` module compiles against the esp-mqtt 1.1.0 bindings: the v6.1 builds so far had no MQTT component. `esp-idf-svc`'s CI builds it with ESP-IDF v6.0 and `"1.*"`, not v6.1. ESP-IDF v6 also turns C warnings into errors by default, including in managed components. |
 | 2 | The MQTT thread's stack high-water mark | Starts at 6144 bytes. Measure on the board and adjust. |
-| 3 | How long the MQTT thread can wait on the client's API lock | DNS (no timeout) plus up to two `network_timeout` periods (default 10 s each), so about 20 s plus DNS. At one reading a minute, a channel of 8 is enough. Confirm on the board. |
-| 4 | `try_send`'s wakeup (std `unpark`) works when called from ESP-IDF's MQTT task, which isn't a pthread | Expected to work with ESP-IDF's pthread mutexes and condition variables; not confirmed in source. |
+| 3 | How long the MQTT thread can wait on the client's API lock | DNS (about 7 s per configured DNS server) plus up to two `network_timeout` periods (default 10 s each), so about 30 s with one DNS server. At one reading a minute, a channel of 8 is enough. Confirm on the board. |
+| 4 | `try_send`'s wakeup (std `unpark`) works when called from esp-mqtt's task, which isn't a pthread | Expected to work with ESP-IDF's pthread mutexes and condition variables; not confirmed in source. |
 
 Verified during reviews:
 
@@ -1236,9 +1298,9 @@ Verified during reviews:
 - `EspMqttClient::new_cb` requires `F: FnMut(EspMqttEvent) + Send + 'static`;
   `EspMqttClient` implements `RawHandle` and `Send`.
 - `esp_mqtt5_client_set_publish_property` stores a pointer, and early publish
-  returns leave it in place (`mqtt5_client.c:418-440`,
-  `mqtt_client.c:2095-2185`).
-- The API lock is a recursive mutex. ESP-IDF's MQTT task holds it while
+  returns leave it in place (`mqtt5_client.c:503-531`,
+  `mqtt_client.c:2500-2633`).
+- The API lock is a recursive mutex. esp-mqtt's task holds it while
   connecting and while running the event callback. The callback can also run
   on the MQTT thread, during a publish whose socket write fails, with the lock
   held there too.
@@ -1269,6 +1331,27 @@ Verified while writing section 6:
 - `Peripherals::take` and `EspSystemEventLoop::take` return
   `Result<_, EspError>`, and `anyhow::Context` is implemented for `Option` too.
 
+Re-verified after moving to ESP-IDF v6.1 (2026-10-20). The firmware, which
+has no MQTT code yet, builds against v6.1 with the locked crates and without
+the MQTT component. The C-side claims above were re-checked in the ESP-IDF
+v6.1 tree and esp-mqtt `v1.1.0`. The registry's 1.1.0 package matches the
+`v1.1.0` git tag for every cited file.
+
+- esp-mqtt: the property setter, `make_publish`, the early returns, the
+  recursive API lock, the abort on a failed write, the inline event dispatch,
+  the 6144-byte task stack, and `destroy` behave as described. The `Kconfig`
+  defaults are unchanged: `MQTT_PROTOCOL_5=n`,
+  `MQTT_SKIP_PUBLISH_IF_DISCONNECTED=n`, and
+  `MQTT_OUTBOX_EXPIRED_TIMEOUT_MS=30000`. The only changed path is the
+  inflight limit (see [The MQTT thread](#the-mqtt-thread)).
+- ESP-IDF: `esp_wifi_set_max_tx_power(int8_t)` still exists, `phy_init`
+  still logs "NVS has not been initialized", `LWIP_SNTP_MAX_SERVERS` still
+  defaults to 1, the pthread default priority is still 5, and log tags still
+  match with `strcmp`. DNS through `getaddrinfo` has no timeout the caller
+  can set, and lwIP gives up after about 7 seconds per DNS server.
+- The `esp-idf-svc` and `esp-idf-hal` citations are unchanged, because their
+  commits didn't move.
+
 ## 8. Deferred
 
 These are separate pieces of future work.
@@ -1281,7 +1364,7 @@ These are separate pieces of future work.
    - **Resubscribing.** With `cleanStart: false`, subscriptions survive a
      resumed session, but not a new one. The callback must request a
      resubscribe when `Connected` reports `session_present == false`.
-   - **Receiving.** Messages arrive in the callback on ESP-IDF's MQTT task. The
+   - **Receiving.** Messages arrive in the callback on esp-mqtt's task. The
      callback must copy the payload into an owned value and pass it on through
      a channel, because event data is only valid until the callback returns
      and `Cell` isn't safe across threads.
@@ -1305,8 +1388,11 @@ These are separate pieces of future work.
    [espressif/esp-mqtt#343](https://github.com/espressif/esp-mqtt/pull/343),
    [esp-rs/embedded-svc#87](https://github.com/esp-rs/embedded-svc/pull/87),
    and [esp-rs/esp-idf-svc#678](https://github.com/esp-rs/esp-idf-svc/pull/678)
-   land and ship in an ESP-IDF release this project uses, replace the
-   pointer-based property setter in the MQTT thread. Only `mqtt.rs` changes.
+   land, and the esp-mqtt part ships in an `espressif/mqtt` release, replace
+   the pointer-based property setter in the MQTT thread. `mqtt.rs`, the
+   `espressif/mqtt` version, and the `esp-idf-svc` `rev` (plus
+   `embedded-svc`, if its version moves) change; ESP-IDF itself doesn't. As
+   of 1.1.0, the esp-mqtt part hasn't shipped.
 7. **Fractional values.** If a sensor needs them, add a fixed-point variant
    such as `Decimal { mantissa: i32, scale: u8 }` instead of floats. The
    ESP32-C3 has no floating-point unit.

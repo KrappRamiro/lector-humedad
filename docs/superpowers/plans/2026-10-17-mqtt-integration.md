@@ -16,7 +16,7 @@ one `block_on(select_array(..))`. All MQTT client calls happen on one
 dedicated `std::thread`, fed through a `std::sync::mpsc::sync_channel(8)`.
 
 **Tech Stack:** `esp-idf-svc` (`d42a678`, with HAL `0d16dca` and sys
-`a6357d4`), ESP-IDF v5.5.3, `embassy-time` 0.5.1, `embassy-sync` 0.8.0,
+`a6357d4`), ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync` 0.8.0,
 `embassy-futures` 0.1.2, `toml-cfg`, `anyhow`, `log`, `tm1637-embedded-hal`
 0.5.2.
 
@@ -505,9 +505,12 @@ FFI pointers and the SAFETY argument in `messageExpiry`. This is the
 heaviest task for concurrency: Claude explains each piece before you write
 it.
 
-- [ ] **Step 1:** `CONFIG_MQTT_PROTOCOL_5=y` in `sdkconfig.defaults`; add
+- [ ] **Step 1:** Add the `espressif/mqtt` 1.1.0 remote component to
+  `Cargo.toml` (section 5, "Build configuration"; ESP-IDF v6 no longer ships
+  esp-mqtt). `CONFIG_MQTT_PROTOCOL_5=y` in `sdkconfig.defaults`; add
   `embassy-sync` (locked at 0.8.0). Build once: confirms open item 1 (the
-  `esp_mqtt5_client_set_publish_property` binding exists).
+  `esp_mqtt5_client_set_publish_property` binding exists) and that the
+  component manager resolved exactly 1.1.0.
 - [ ] **Step 2:** The client configuration table from section 3.
 - [ ] **Step 3:** The event callback (three things only, section 3).
 - [ ] **Step 4:** `start`: channel, `new_cb`, thread with
@@ -522,7 +525,7 @@ it.
   the broker credentials) on your machine: expected a retained
   `{"state":"online","ts":...}`. Power the board off: after about
   45 s (keep-alive) plus 60 s (will delay), `{"state":"offline"}`. Also
-  check: the `online` came from a `try_send` on ESP-IDF's task (open item 4).
+  check: the `online` came from a `try_send` on esp-mqtt's task (open item 4).
   Log the MQTT thread's stack high-water mark once (open item 2).
 - [ ] **Step 9: Review Focus 1.** Wrong `mqtt_password`. Expected: esp-mqtt
   logs the refusal, then restart after ~30 s with "waiting for the MQTT
