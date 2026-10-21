@@ -15,8 +15,8 @@ the development machine. The firmware runs its loops as boxed futures under
 one `block_on(select_array(..))`. All MQTT client calls happen on one
 dedicated `std::thread`, fed through a `std::sync::mpsc::sync_channel(8)`.
 
-**Tech Stack:** `esp-idf-svc` (`d42a678`, with HAL `0d16dca` and sys
-`a6357d4`), ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync` 0.8.0,
+**Tech Stack:** `esp-idf-svc` 0.53.0 (with `esp-idf-hal` 0.47.0 and
+`esp-idf-sys` 0.38.1, all from crates.io), ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync` 0.8.0,
 `embassy-futures` 0.1.2, `toml-cfg`, `anyhow`, `log`, `tm1637-embedded-hal`
 0.5.2.
 
@@ -74,21 +74,29 @@ board check in the task named.
 
 ---
 
-### Task 1: Pin the ESP-IDF git dependencies
+### Task 1: Use the crates.io releases of the ESP-IDF crates (done)
 
-**Files:** Modify `Cargo.toml` (`[patch.crates-io]`).
+**Files:** Modify `Cargo.toml` (remove `[patch.crates-io]`), `Cargo.lock`.
 
-**Concepts first:** what `[patch.crates-io]` does; git dependencies without
-`rev` follow a branch; why `cargo update` would then move them (the drift
-`CLAUDE.md` warns about).
+The original task pinned `rev` on the three git dependencies. Before it
+started, upstream merged `esp-idf-sys`, `esp-idf-hal`, and `esp-idf-svc` into
+the [esp-rs/esp-idf](https://github.com/esp-rs/esp-idf) monorepo and
+archived the old repositories. The releases that carry the v6 support
+(`esp-idf-svc` 0.53.0, `esp-idf-hal` 0.47.0, `esp-idf-sys` 0.38.1) were
+already on crates.io, so the patch was removed instead. A registry version
+never changes once published, so `Cargo.lock` pins it without a `rev`.
 
-- [ ] **Step 1:** Add `rev` to each patch entry, using the commits in
-  `Cargo.lock`: `esp-idf-sys` `a6357d443d1241b17bd85d113c8c7e130b98a81c`,
-  `esp-idf-hal` `0d16dcaf8411735c4da9bc80fdc2f7da33f5dc4f`, `esp-idf-svc`
-  `d42a67836f965eb6fd5d2b04785ab294751c6aa7`.
-- [ ] **Step 2:** `cargo build`. Expected: `git diff Cargo.lock` shows at
-  most the `source` lines gaining `?rev=...`, no version changes.
-- [ ] **Step 3:** Gate, review, commit: `build: pin esp-idf git dependencies`.
+**Concepts:** what `[patch.crates-io]` does; git dependencies without `rev`
+follow a branch; registry versions are immutable and checksummed.
+
+- [x] **Step 1:** Remove `[patch.crates-io]`; `cargo update -p esp-idf-svc
+  -p esp-idf-hal -p esp-idf-sys`. `Cargo.lock` changes only those three
+  `source` lines (plus their `checksum`); `esp-idf-sys` goes 0.38.0 to
+  0.38.1. `esp-idf-hal` and `esp-idf-svc` are byte-identical to the
+  previously locked commits. `esp-idf-sys` 0.38.1 only narrows some libc
+  checks and adds Mbed TLS headers to `bindings.h`.
+- [x] **Step 2:** Gate, board check, commit:
+  `build: use crates.io releases of the esp-idf crates`.
 
 ---
 

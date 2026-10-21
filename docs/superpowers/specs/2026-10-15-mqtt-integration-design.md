@@ -27,9 +27,8 @@ Sources this design follows:
 - `std-training/common/lib/wifi` (commit `f2223b5`) and
   `std-training/intro/http-client`: WiFi setup and configuration patterns.
 
-Locked versions this design was checked against: `esp-idf-svc` commit
-`d42a678`, `esp-idf-hal` commit `0d16dca`, `esp-idf-sys` commit `a6357d4`,
-ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync`
+Locked versions this design was checked against: `esp-idf-svc` 0.53.0,
+`esp-idf-hal` 0.47.0, `esp-idf-sys` 0.38.1 (crates.io releases), ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync`
 0.8.0, `embassy-futures` 0.1.2.
 
 Since ESP-IDF v6.0, the MQTT C library (esp-mqtt) is no longer part of
@@ -443,7 +442,7 @@ move |event: EspMqttEvent| match event.payload() {
   real reason, such as "bad username or password" (`mqtt_client.c:973`) or an
   MQTT5 reason code, is logged by the C library itself. The Rust log line is
   only a marker next to it. esp-mqtt 1.1.0 also puts the reason code in the
-  event (`reason_code`, `mqtt_client.h:235`), but `esp-idf-svc` `d42a678`
+  event (`reason_code`, `mqtt_client.h:235`), but `esp-idf-svc` 0.53.0
   doesn't expose it.
 - `try_send` returns immediately. If the channel is full, the request is
   dropped and logged.
@@ -1115,10 +1114,10 @@ pub fn fail_and_restart(reason: &anyhow::Error) -> ! {
     `Cargo.lock` as a transitive dependency.
   - Add `embassy-sync` (`Signal`). Version 0.8.0 is already in `Cargo.lock` as
     a transitive dependency.
-  - Pin `rev` on the three `[patch.crates-io]` git dependencies
-    (`esp-idf-svc` `d42a678`, `esp-idf-hal` `0d16dca`, `esp-idf-sys` at its
-    locked commit). Without a `rev`, `cargo update` moves them to their latest
-    commit, which is the drift `CLAUDE.md` warns about.
+  - `esp-idf-svc`, `esp-idf-hal`, and `esp-idf-sys` come from crates.io,
+    with no `[patch.crates-io]`. Their git repositories were archived when
+    upstream moved to the `esp-rs/esp-idf` monorepo, and a published registry
+    version can't change, so `Cargo.lock` alone keeps them from drifting.
   - Add the MQTT C library as a remote component:
 
     ```toml
@@ -1132,8 +1131,8 @@ pub fn fail_and_restart(reason: &anyhow::Error) -> ! {
     `src/lib.rs:90`). Without this block, `esp_idf_svc::mqtt` doesn't exist,
     and the build fails with `unresolved import esp_idf_svc::mqtt`, an error
     that doesn't mention the missing component.
-  - The component version is pinned for the same reason as the `rev`s: a
-    range like `"1.*"` moves to each new 1.x release. `esp-idf-sys` writes
+  - The component version is pinned so it can't drift: a range like
+    `"1.*"` moves to each new 1.x release. `esp-idf-sys` writes
     the string unchanged into `idf_component.yml`
     (`build/native/cargo_driver/config.rs:185`), and the component manager
     reads a bare `"1.1.0"` as exactly 1.1.0 (checked with its
@@ -1279,7 +1278,7 @@ decision before adapting the code.
 
 | # | Item | Why it matters |
 |---|---|---|
-| 1 | The binding for `esp_mqtt5_client_set_publish_property` is generated after `CONFIG_MQTT_PROTOCOL_5=y` | Expected: `esp-idf-sys` (`a6357d4`, `bindings.h:405-408`) includes `mqtt5_client.h` under that option when either `ESP_IDF_COMP_MQTT_ENABLED` (ESP-IDF v5) or `ESP_IDF_COMP_ESPRESSIF__MQTT_ENABLED` (the v6 remote component) is set, and the binding structs derive `Default`. The same build is the first time `esp-idf-svc`'s `mqtt` module compiles against the esp-mqtt 1.1.0 bindings: the v6.1 builds so far had no MQTT component. `esp-idf-svc`'s CI builds it with ESP-IDF v6.0 and `"1.*"`, not v6.1. ESP-IDF v6 also turns C warnings into errors by default, including in managed components. |
+| 1 | The binding for `esp_mqtt5_client_set_publish_property` is generated after `CONFIG_MQTT_PROTOCOL_5=y` | Expected: `esp-idf-sys` (0.38.1, `bindings.h:426-429`) includes `mqtt5_client.h` under that option when either `ESP_IDF_COMP_MQTT_ENABLED` (ESP-IDF v5) or `ESP_IDF_COMP_ESPRESSIF__MQTT_ENABLED` (the v6 remote component) is set, and the binding structs derive `Default`. The same build is the first time `esp-idf-svc`'s `mqtt` module compiles against the esp-mqtt 1.1.0 bindings: the v6.1 builds so far had no MQTT component. `esp-idf-svc`'s CI builds it with ESP-IDF v6.0 and `"1.*"`, not v6.1. ESP-IDF v6 also turns C warnings into errors by default, including in managed components. |
 | 2 | The MQTT thread's stack high-water mark | Starts at 6144 bytes. Measure on the board and adjust. |
 | 3 | How long the MQTT thread can wait on the client's API lock | DNS (about 7 s per configured DNS server) plus up to two `network_timeout` periods (default 10 s each), so about 30 s with one DNS server. At one reading a minute, a channel of 8 is enough. Confirm on the board. |
 | 4 | `try_send`'s wakeup (std `unpark`) works when called from esp-mqtt's task, which isn't a pthread | Expected to work with ESP-IDF's pthread mutexes and condition variables; not confirmed in source. |
@@ -1390,7 +1389,7 @@ These are separate pieces of future work.
    and [esp-rs/esp-idf-svc#678](https://github.com/esp-rs/esp-idf-svc/pull/678)
    land, and the esp-mqtt part ships in an `espressif/mqtt` release, replace
    the pointer-based property setter in the MQTT thread. `mqtt.rs`, the
-   `espressif/mqtt` version, and the `esp-idf-svc` `rev` (plus
+   `espressif/mqtt` version, and the `esp-idf-svc` version (plus
    `embedded-svc`, if its version moves) change; ESP-IDF itself doesn't. As
    of 1.1.0, the esp-mqtt part hasn't shipped.
 7. **Fractional values.** If a sensor needs them, add a fixed-point variant

@@ -615,7 +615,8 @@ dependencies = [
 [[package]]
 name = "esp-idf-hal"
 version = "0.47.0"
-source = "git+https://github.com/esp-rs/esp-idf-hal.git#0d16dcaf8411735c4da9bc80fdc2f7da33f5dc4f"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "52353908ed84c0290500557d7097ebf95985a6a9c98ea89cfb1ff9606ff7608f"
 dependencies = [
  "atomic-waker",
  "critical-section",
@@ -638,7 +639,8 @@ dependencies = [
 [[package]]
 name = "esp-idf-svc"
 version = "0.53.0"
-source = "git+https://github.com/esp-rs/esp-idf-svc.git#d42a67836f965eb6fd5d2b04785ab294751c6aa7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "80528df10e8ee316043f0a53bcbec3126a217168813afdcae11078a5f34e60c9"
 dependencies = [
  "embassy-futures",
  "embassy-time-driver",
@@ -657,8 +659,9 @@ dependencies = [
 
 [[package]]
 name = "esp-idf-sys"
-version = "0.38.0"
-source = "git+https://github.com/esp-rs/esp-idf-sys.git#a6357d443d1241b17bd85d113c8c7e130b98a81c"
+version = "0.38.1"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "77deab475cab0b375e20c7450b0d265f928480af712214c84e848df0f57c29f4"
 dependencies = [
  "anyhow",
  "build-time",
