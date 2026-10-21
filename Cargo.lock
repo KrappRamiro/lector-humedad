@@ -975,6 +975,7 @@ dependencies = [
  "embassy-time",
  "embuild",
  "esp-idf-svc",
+ "fak-core",
  "log",
  "tm1637-embedded-hal",
 ]

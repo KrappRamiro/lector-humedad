@@ -1,5 +1,5 @@
 [package]
-name = "fak-core" # Se importa como fak_core
+name = "fak-core"             # Se importa como fak_core
 version = "0.1.0"
 edition.workspace = true
 rust-version.workspace = true

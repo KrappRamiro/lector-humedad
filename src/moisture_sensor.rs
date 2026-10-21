@@ -5,25 +5,11 @@ use esp_idf_svc::hal::{
     },
     gpio::ADCPin,
 };
+use fak_core::moisture::percent_moisture_from_reading;
 
 // TODO: Do this better, this kinda sucks
 const DRY_READING: u16 = 2309;
 const WET_READING: u16 = 780;
-
-/// dry and wet reading are the lowest and highest readings the sensor can have.
-fn percent_moisture_from_reading(raw_reading: u16, dry_reading: u16, wet_reading: u16) -> u16 {
-    let clamped = raw_reading.clamp(wet_reading, dry_reading);
-
-    let percent =
-        (((dry_reading - clamped) as u32 * 100) / (dry_reading - wet_reading) as u32) as u16;
-    log::debug!(
-        "The percentage calculation from a raw reading of {} was {}",
-        raw_reading,
-        percent
-    );
-
-    percent
-}
 
 /// Domain knowledge needed to undestand this struct:
 /// - `Pin` = the physical pin on the board.
@@ -121,46 +107,11 @@ impl<'d, C: AdcChannel> MoistureSensor<'d, C> {
         let computed_reading: u16 = (total_sum / READING_ITERATIONS) as u16;
         let percent_moisture =
             percent_moisture_from_reading(computed_reading, self.dry_reading, self.wet_reading);
+        log::debug!(
+            "The percentage calculation from a raw reading of {} was {}",
+            computed_reading,
+            percent_moisture
+        );
         Ok(percent_moisture)
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    #[allow(unused_imports)]
-    use super::*;
-
-    #[test]
-    fn raw_reading_at_dry_bound_is_zero_percent() {
-        let percent = percent_moisture_from_reading(DRY_READING, DRY_READING, WET_READING);
-        assert_eq!(percent, 0);
-    }
-
-    #[test]
-    fn raw_reading_at_wet_bound_is_hundred_percent() {
-        let percent = percent_moisture_from_reading(WET_READING, DRY_READING, WET_READING);
-        assert_eq!(percent, 100);
-    }
-
-    #[test]
-    fn raw_reading_above_dry_bound_clamps_to_zero_percent() {
-        let percent = percent_moisture_from_reading(DRY_READING + 500, DRY_READING, WET_READING);
-        assert_eq!(percent, 0);
-    }
-
-    #[test]
-    fn raw_reading_below_wet_bound_clamps_to_hundred_percent() {
-        let percent = percent_moisture_from_reading(WET_READING - 500, DRY_READING, WET_READING);
-        assert_eq!(percent, 100);
-    }
-
-    #[test]
-    fn raw_reading_at_midpoint_is_fifty_percent() {
-        // midpoint = (2309 + 780) / 2 = 1544 (integer division)
-        // percent = ((2309 - 1544) * 100) / (2309 - 780) = 76500 / 1529 = 50 (floored)
-        // If DRY_READING and WET_READING constants change some day, this test will go to shit
-        let midpoint = (DRY_READING + WET_READING) / 2;
-        let percent = percent_moisture_from_reading(midpoint, DRY_READING, WET_READING);
-        assert_eq!(percent, 50);
     }
 }

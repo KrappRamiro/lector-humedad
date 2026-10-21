@@ -1,5 +1,7 @@
 [workspace]
-members = ["fak-core"] # Lista de crates que son miembros de este proyecto. La ruta tiene que ser relativa a la raiz.
+members = [
+  "fak-core",
+] # Lista de crates que son miembros de este proyecto. La ruta tiene que ser relativa a la raiz.
 
 [workspace.package]
 edition = "2024"
@@ -15,7 +17,7 @@ rust-version.workspace = true
 
 [[bin]]
 name = "lector-humedad"
-harness = false # do not use the built-in cargo test harness -> resolve rust-analyzer errors
+harness = false         # do not use the built-in cargo test harness -> resolve rust-analyzer errors
 
 [profile.release]
 opt-level = "s"
@@ -29,8 +31,12 @@ esp-idf-hal = { git = "https://github.com/esp-rs/esp-idf-hal.git" }
 esp-idf-svc = { git = "https://github.com/esp-rs/esp-idf-svc.git" }
 
 [dependencies]
+fak-core = { path = "fak-core" }
 log = "0.4"
-esp-idf-svc = { version = "0.53", features = ["critical-section", "embassy-time-driver"] }
+esp-idf-svc = { version = "0.53", features = [
+  "critical-section",
+  "embassy-time-driver",
+] }
 # Remove `generic-queue-8` if you plan to use `embassy-time` WITH `embassy-executor`
 embassy-time = { version = "0.5", features = ["generic-queue-8"] }
 anyhow = "1.0.104"
