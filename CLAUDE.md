@@ -92,3 +92,17 @@ mentor role below come first.
     and `esp_idf_svc::sys` — this project depends only on `esp-idf-svc`
     directly and reaches HAL code through that re-export, so imports go
     through `esp_idf_svc::hal::...`, not `esp_idf_hal::...` directly.
+- Espressif Documentation MCP (`espressif-docs`, tool
+  `search_espressif_sources`): searches official Espressif documentation,
+  such as the ESP32-C3 datasheet and Technical Reference Manual, hardware
+  design guidelines, and the ESP-IDF Programming Guide. Use it for questions
+  about the C side and the hardware.
+  - It covers only the newest ESP-IDF release. When that's newer than
+    `ESP_IDF_VERSION` in `.cargo/config.toml`, check its answers against the
+    local tree in `~/.espressif/esp-idf/<version>`, which is what this
+    project compiles.
+  - It doesn't cover the esp-rs crates or esp-mqtt (the `espressif/mqtt`
+    component). Use Context7 or `cargo doc` for the crates, and the
+    component's source for esp-mqtt.
+  - Rate limit: 40 requests per hour, 200 per day. Search for the specific
+    question instead of browsing with it.
