@@ -4,14 +4,17 @@ target = "riscv32imc-esp-espidf"
 [target.'cfg(target_os = "espidf")']
 linker = "ldproxy"
 runner = "espflash flash --monitor"
-rustflags = [ "--cfg",  "espidf_time64"]
+# espidf_picolibc: ESP-IDF v6 uses Picolibc, whose O_APPEND/O_CREAT/O_TRUNC
+# values differ from Newlib's. Without it, `libc` (and `std::fs`) use Newlib's.
+# Remove it if sdkconfig ever switches back to Newlib (CONFIG_LIBC_NEWLIB=y).
+rustflags = [ "--cfg",  "espidf_time64", "--cfg", "espidf_picolibc"]
 
 [unstable]
 build-std = ["std", "panic_abort"]
 
 [env]
 MCU = "esp32c3"
-ESP_IDF_VERSION = "v5.5.3"
+ESP_IDF_VERSION = "v6.1"
 ESP_IDF_TOOLS_INSTALL_DIR = "global"
 
 # Uncomment this if you have moved the target dir by setting CARGO_TARGET_DIR or similar.

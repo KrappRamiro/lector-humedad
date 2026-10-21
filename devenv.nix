@@ -71,7 +71,7 @@ in
 
   enterShell = ''
     # Recent Espressif esp-clang toolchain builds (like esp-19.1.2, used by
-    # ESP-IDF v5.5) ship without a libclang.so at all
+    # ESP-IDF v5.5, and esp-21.1.3, used by v6.1) ship without a libclang.so at all
     # (see https://github.com/espressif/llvm-project/issues/108).
     # When esp-idf-sys detects that, it falls back to looking for a `~/.espup/esp-clang`
     # symlink (created by the `espup` CLI tool, which we don't use here) and otherwise
