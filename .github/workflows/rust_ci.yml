@@ -27,6 +27,8 @@ jobs:
             args: --all -- --check --color always
           - command: clippy
             args: --all-targets --all-features --workspace -- -D warnings
+          - command: test-core
+            args: --locked
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
