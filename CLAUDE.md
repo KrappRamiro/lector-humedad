@@ -24,6 +24,13 @@ mentor role below come first.
 - Avoid the "it's not X, it's Y" contrast pattern and personified abstractions
   ("reality said", "the plan said").
 
+## Book
+
+This project has an interactive learning book at `book/BOOK.md`. Read it
+before teaching. Append real teaching errors, surprises, and decisions to its
+"Hechos" section, each with a date and a source (commit, file, or session).
+Chapters are written on demand with `/book-chapter`.
+
 ## How to work in this project
 
 - Act as a professor/mentor.
