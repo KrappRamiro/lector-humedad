@@ -5,11 +5,7 @@ use esp_idf_svc::hal::{
     },
     gpio::ADCPin,
 };
-use fak_core::moisture::percent_moisture_from_reading;
-
-// TODO: Do this better, this kinda sucks
-const DRY_READING: u16 = 2309;
-const WET_READING: u16 = 780;
+use fak_core::moisture::Calibration;
 
 /// Domain knowledge needed to undestand this struct:
 /// - `Pin` = the physical pin on the board.
@@ -18,7 +14,7 @@ const WET_READING: u16 = 780;
 /// - `AdcChannel` = A Channel is a combination of pin + which ADC unit it's wired to.
 /// - `AdcDriver` = a handle representing a claim over the whole ADC1 hardware block.
 ///   It doesn't know or care about any specific pin, it's just the ADC itself
-/// - `AdcChannelDriver` = Like the AdcDriver, but for a Channel (The combination of pin + ADC)
+/// - `AdcChannelDriver` = Like the `AdcDriver`, but for a Channel (The combination of pin + ADC)
 ///  
 /// Now, to initialize a Moisture Sensor, we need two things:
 /// - A pin where the sensor will be connected
@@ -56,10 +52,8 @@ pub struct MoistureSensor<'d, C: AdcChannel> {
     //          blank2: pin type ,
     //          blank3: an ADC driver
     //      >
-    /// What constitutes as a dry reading , in terms of the value the ADC reports
-    dry_reading: u16,
-    /// What constitutes as a wet reading , in terms of the value the ADC reports
-    wet_reading: u16,
+    calibration: Calibration,
+
     // To understand why this has this type, see the big-ass comment on top of the struct.
     // Just keep in mind it has to be a REFERENCE to the AdcDriver.
     // We should NEVER own the AdcDriver itself, because that would mean this sensor would have complete ownership of the ADC itself, which makes no fucking sense.
@@ -74,14 +68,11 @@ impl<'d, C: AdcChannel> MoistureSensor<'d, C> {
         //
         // pin's type is copied straight from AdcChannelDriver::new()'s own pin parameter
         // it means that pin type can be anything that implements ADCPin, as long as the AdcChannel the pin is physically connected to matches `C`
+        calibration: Calibration,
         pin: impl ADCPin<AdcChannel = C> + 'd,
-        // Here, the adc type is an AdcDriver, and `C` holds which adc unit it is (adc1, adc2)
+        // `C` holds which adc unit it is (adc1, adc2)
         adc: &'d AdcDriver<'d, C::AdcUnit>,
     ) -> anyhow::Result<Self> {
-        anyhow::ensure!(
-            DRY_READING > WET_READING,
-            "calibration invalid: dry reading must exceed wet reading"
-        );
         // configuring pin to analog read, you can regulate the adc input voltage range depending on your need
         // for this example we use the attenuation of 11db which sets the input voltage range to around 0-3.6V
         let adc_config = AdcChannelConfig {
@@ -92,25 +83,23 @@ impl<'d, C: AdcChannel> MoistureSensor<'d, C> {
         let adc_channel_driver = AdcChannelDriver::new(adc, pin, &adc_config)?;
 
         Ok(Self {
-            dry_reading: DRY_READING,
-            wet_reading: WET_READING,
+            calibration,
             adc_channel_driver,
         })
     }
-    pub fn read(&mut self) -> anyhow::Result<u16> {
-        let mut total_sum: u32 = 0;
+    pub fn read(&mut self) -> anyhow::Result<u8> {
         const READING_ITERATIONS: u32 = 30;
+        let mut total_sum: u32 = 0;
         for _ in 0..READING_ITERATIONS {
             let reading = self.adc_channel_driver.read()?;
-            total_sum += reading as u32;
+            total_sum += u32::from(reading);
         }
-        let computed_reading: u16 = (total_sum / READING_ITERATIONS) as u16;
-        let percent_moisture =
-            percent_moisture_from_reading(computed_reading, self.dry_reading, self.wet_reading);
+        let reading_avg = u16::try_from(total_sum / READING_ITERATIONS)
+            .expect("The average of u16 readings fits inside a u16. This expect will never happen");
+        let percent_moisture = self.calibration.percent(reading_avg);
+
         log::debug!(
-            "The percentage calculation from a raw reading of {} was {}",
-            computed_reading,
-            percent_moisture
+            "The percentage calculation from a reading of {reading_avg} mV was {percent_moisture}"
         );
         Ok(percent_moisture)
     }

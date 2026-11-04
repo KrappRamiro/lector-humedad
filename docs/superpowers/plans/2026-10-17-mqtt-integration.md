@@ -100,7 +100,7 @@ follow a branch; registry versions are immutable and checksummed.
 
 ---
 
-### Task 2: `Calibration` in `fak-core` (test-first)
+### Task 2: `Calibration` in `fak-core` (test-first, done)
 
 **Files:**
 - Modify: `fak-core/src/moisture.rs` (replace `percent_moisture_from_reading`)
@@ -127,7 +127,7 @@ works inside them; doc examples as tests.
 **Questions:** Why can't `percent` divide by zero? What would happen at build
 time if `MOISTURE_01_CALIBRATION` used `new(780, 2309)`?
 
-- [ ] **Step 1: Write the failing tests** in `fak-core/src/moisture.rs`.
+- [x] **Step 1: Write the failing tests** in `fak-core/src/moisture.rs`.
   Tests return `Result<(), CalibrationError>` and build with
   `Calibration::new(2309, 780)?`:
 
@@ -145,22 +145,22 @@ time if `MOISTURE_01_CALIBRATION` used `new(780, 2309)`?
 
   Plus an `# Examples` doc block on `percent` showing `new(2309, 780)` and
   `percent(780) == 100`.
-- [ ] **Step 2:** `cargo test-core`. Expected: compile errors (nothing is
+- [x] **Step 2:** `cargo test-core`. Expected: compile errors (nothing is
   defined yet).
-- [ ] **Step 3: Implement** `Calibration`, `CalibrationError`, and their
+- [x] **Step 3: Implement** `Calibration`, `CalibrationError`, and their
   impls. `percent` clamps to `wet_mv..=dry_mv`, computes in `u32`, narrows
   with `u8::try_from(..).expect(..)`. Delete
   `percent_moisture_from_reading` and its 5 old tests (the new ones replace
   them).
-- [ ] **Step 4:** `cargo test-core`. Expected: 9 unit tests and 1 doc-test
+- [x] **Step 4:** `cargo test-core`. Expected: 9 unit tests and 1 doc-test
   pass.
-- [ ] **Step 5: Firmware.** Add `MOISTURE_01_CALIBRATION` to `main.rs`, as a
+- [x] **Step 5: Firmware.** Add `MOISTURE_01_CALIBRATION` to `main.rs`, as a
   `match` with `panic!` (section 4). `MoistureSensor::new` takes it.
-- [ ] **Step 6: Prove the build-time check.** Temporarily change it to
+- [ ] **Step 6: Prove the build-time check.** (skipped) Temporarily change it to
   `new(780, 2309)` and run `cargo build`. Expected: a compile error quoting
   your panic message. Revert.
-- [ ] **Step 7: Board.** Same percentage as before.
-- [ ] **Step 8:** Gate (pedantic should now be clean for `moisture.rs`),
+- [x] **Step 7: Board.** Same percentage as before.
+- [x] **Step 8:** Gate (pedantic should now be clean for `moisture.rs`),
   review, commit: `feat(core): add validated Calibration`.
 
 ---

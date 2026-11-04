@@ -8,12 +8,20 @@ use esp_idf_svc::hal::{
     peripherals::Peripherals,
     task::block_on,
 };
+use fak_core::moisture::Calibration;
 use tm1637_embedded_hal::{Brightness, TM1637, TM1637Builder, tokens::Async};
 
 const POLL_INTERVAL: Duration = Duration::from_millis(100);
+// TODO: This calibration should instead be capable of being modified on runtime via MQTT, and not a const
+const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309, 780) {
+    Ok(calibration) => calibration,
+    Err(_) => panic!("Moisture sensor 01: dry reading must be above wet reading"),
+};
 
 type TM1637DisplayT =
     TM1637<4, Async, PinDriver<'static, Output>, PinDriver<'static, Output>, embassy_time::Delay>;
+
+// --- --- //
 
 async fn sensor_display<C: AdcChannel>(
     moisture_sensor: &mut MoistureSensor<'_, C>,
@@ -21,7 +29,12 @@ async fn sensor_display<C: AdcChannel>(
 ) {
     match moisture_sensor.read() {
         Ok(percent) => {
-            if let Err(e) = display.options().r_u16_4(percent).display().await {
+            if let Err(e) = display
+                .options()
+                .r_u16_4(u16::from(percent))
+                .display()
+                .await
+            {
                 log::error!("failed to write to display: {e:?}");
             }
         }
@@ -64,7 +77,11 @@ fn main() -> anyhow::Result<()> {
     // - GPIO 20/21 --> UART RX/TX pins
     // See https://www.espboards.dev/blog/esp32-strapping-pins/
     // See https://esp32.com/viewtopic.php?p=83835
-    let mut moisture_sensor = MoistureSensor::new(peripherals.pins.gpio0, &adc1)?;
+    let mut moisture_sensor = MoistureSensor::new(
+        MOISTURE_SENSOR_01_CALIBRATION,
+        peripherals.pins.gpio0,
+        &adc1,
+    )?;
 
     // Create a TM1637 instance
     let tm1637_clk = PinDriver::output(peripherals.pins.gpio5)?;
