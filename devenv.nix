@@ -88,6 +88,16 @@ in
     rustc --version
   '';
 
+  # Pedantic lints are advice for learning, not part of the gate, so they
+  # warn instead of failing. Run with `clippy-pedantic` inside the shell.
+  # See https://devenv.sh/scripts/
+  scripts.clippy-pedantic = {
+    exec = ''
+      cargo clippy --workspace --all-targets --all-features --locked "$@" -- -W clippy::pedantic
+    '';
+    description = "Run clippy with pedantic lints as warnings";
+  };
+
   enterTest = ''
     # devenv test hides stdout when the script succeeds; send it to stderr so results stay visible
     exec 1>&2
