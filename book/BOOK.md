@@ -14,7 +14,7 @@ Goal: after the last chapter the reader has finished the MQTT plan (Tasks 3 to 1
 ## Chapters
 
 1. Introduction: published
-2. Values and gauges (plan Task 3): draft
+2. Values and gauges (plan Task 3): published
 3. The readout rule (plan Task 4): draft
 4. Sharing a reading (plan Task 5, Steps 1 to 3): draft
 5. Loops side by side (plan Task 5, Steps 4 to 9): draft
@@ -31,6 +31,7 @@ Goal: after the last chapter the reader has finished the MQTT plan (Tasks 3 to 1
 ## Facts already taught
 
 - Chapter 1: the two crates (`fak-core` for pure logic tested on the host with `cargo test-core`, the firmware crate for everything that touches ESP-IDF) and why the split exists; the rule "move decisions, not stateful structs"; the target architecture (four boxed futures under one `block_on(select_array(..))`, plus a dedicated MQTT thread fed by `sync_channel(8)`); the locked versions and that ESP-IDF v6 no longer bundles esp-mqtt; the working loop of a chapter (failing test, implement, gate with `devenv test`, `/code-review`, commit, board check).
+- Chapter 2: closed enums and exhaustive `match` (E0004, no wildcard arms); `From` for lossless conversions, `Into` via the blanket impl, `.into()` needs a known target; no silent `as` casts (`255 as i8` is `-1`); `Reading` pairs a `Value` with `ts`; what each derive buys (`Debug`/`PartialEq` for `assert_eq!`, `Eq` as reflexivity, `Copy` needs all fields `Copy`); the term gauge (Prometheus) and sensor vs gauge; `&'static str`; the blanket impl `impl<T, U> Into<U> for T where U: From<T>`; MQTT retained messages (broker keeps the last message per topic); generics vs trait objects, `&dyn Trait` as two pointers (data + vtable), drawn as a memory diagram, 16 bytes on the host and 8 on the ESP32-C3; associated types taught from `Iterator::Item` and a `Counter` impl; why `Gauge` has no associated type (E0191, then E0271); test-first in `fak-core` with `42_u8` suffixes.
 
 ## Decisions
 
@@ -48,3 +49,5 @@ Goal: after the last chapter the reader has finished the MQTT plan (Tasks 3 to 1
 - 2026-10-20: the separate esp-idf-sys/hal/svc repositories were archived into the `esp-rs/esp-idf` monorepo; the project switched to crates.io releases (commit 7df7a8e).
 - Before 2026-10-17: `embassy_executor` was tried and rejected because its task functions can't be generic, so each GPIO pin's ADC channel type needed a near-duplicate task; the project moved to `block_on` with generic async fns, and the MQTT spec later chose `select_array` over `join_array` (project memory `project_concurrency_architecture.md`).
 - 2026-11-04: `Calibration` replaced the loose function, with a `const fn new` that rejects inverted limits; plan Task 2 Step 6 (proving the build-time check on the board crate) was skipped (commit 630f33a; plan).
+- 2026-11-04: the reader did not follow "Why the trait has no associated type" in Chapter 2, because the term was defined in half a clause; an explanation from `Iterator::Item` with the code first worked. The reader also found the chapter's paragraphs too dense, with several ideas per sentence. The `book-voice` skill now asks for one idea per paragraph, code before its explanation, and memory diagrams beside prose about pointers, and `book-reviewer` checks for both (session, interactive-book plugin in nixos-config, uncommitted).
+- 2026-11-04: Chapter 2 was rewritten under the new voice rules: paragraphs split to one idea each, a memory diagram of `[&dyn Gauge; 2]` added, and associated types taught from `Iterator::Item` with code before prose. The independent review of the rewrite still found 14 issues, among them the associated-type `Gauge` shown only as inline fragments (the same failure as the first version), `Reading` used as an example one section before it was introduced, and MQTT terms (retained message) used without definition (session; `book/verification/02.md`).
