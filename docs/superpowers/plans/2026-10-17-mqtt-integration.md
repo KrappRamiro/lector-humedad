@@ -18,7 +18,7 @@ dedicated `std::thread`, fed through a `std::sync::mpsc::sync_channel(8)`.
 **Tech Stack:** `esp-idf-svc` 0.53.0 (with `esp-idf-hal` 0.47.0 and
 `esp-idf-sys` 0.38.1, all from crates.io), ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync` 0.8.0,
 `embassy-futures` 0.1.2, `toml-cfg`, `anyhow`, `log`, `tm1637-embedded-hal`
-0.5.2.
+0.5.3.
 
 **Spec:** `docs/superpowers/specs/2026-10-15-mqtt-integration-design.md`
 (section numbers below refer to it). Requires
@@ -190,30 +190,62 @@ associated type (E0191, section 4).
 
 ---
 
-### Task 4: `readout::shown_value` (test-first)
+### Task 4: `readout::readout_for` (test-first)
 
 **Files:** Create `fak-core/src/readout.rs`; modify `fak-core/src/lib.rs`.
 
-**Interfaces:** Consumes `Reading`, `Value` (Task 3). Produces
-`#[must_use] pub fn shown_value(reading: Option<Reading>) -> Option<u16>`.
+**Interfaces:** Consumes `Reading`, `Value` (Task 3). Produces (section 4,
+`fak-core/src/readout.rs`):
+- `pub enum Readout<N> { Number(N), TooHigh, TooLow, On, Off, NoReading }`,
+  with the doc comment saying to build it with `readout_for`.
+- `pub trait NumericScreen { type Number: TryFrom<i32> + PartialOrd + Copy; const DRAWABLE_RANGE: RangeInclusive<Self::Number>; }`
+- `pub const FOUR_DIGITS: RangeInclusive<i16> = -999..=9999;`
+- `#[must_use] pub fn readout_for<S: NumericScreen>(reading: Option<Reading>) -> Readout<S::Number>`
 
-**Concepts first:** pattern matching with guards and ranges
-(`Some(Reading { value: Value::Integer(v), .. }) if (0..=9999).contains(&v)`);
-`u16::try_from` after the range check; why the bound is 9999 (section 4).
+**Concepts first:** a generic enum (`Readout<N>`); a trait with an associated
+type that has bounds, and an associated const whose type uses it
+(`RangeInclusive<Self::Number>`); calling a generic function with turbofish
+(`readout_for::<FixtureFourDigits>`); `let ... else`; literal patterns
+(`Value::Bool(true)`); `S::Number::try_from(v)` matched on `Ok`/`Err` with
+guards, and why guarded arms don't count toward exhaustiveness; why the range
+check is a guard and not a range pattern (E0308, E0158); why `TooHigh`
+compares with `DRAWABLE_RANGE.end()` for `Ok` but with zero for `Err`; the blanket
+`TryFrom` with `Error = Infallible`; why the bounds are -999 and 9999
+(section 4).
 
-- [ ] **Step 1: Failing tests** (any `ts`):
+**Questions:** Why does a failed `try_from` mean the value is outside the
+range, and how does its sign say which side? Why can't the test screen
+`FixtureTenToTwenty` use `Number = i16` and still cover every arm? What can still go
+wrong with `Readout::<i16>::Number(12345)`, and what stops it today?
 
-  | Test | Input | Expected |
-  |---|---|---|
-  | `no_reading_shows_dashes` | `None` | `None` |
-  | `zero_is_shown` | `Integer(0)` | `Some(0)` |
-  | `largest_four_digit_value_is_shown` | `Integer(9999)` | `Some(9999)` |
-  | `five_digit_value_shows_dashes` | `Integer(10000)` | `None` |
-  | `negative_value_shows_dashes` | `Integer(-1)` | `None` |
-  | `bool_shows_dashes` | `Bool(true)` | `None` |
+- [ ] **Step 1: Failing tests** (any `ts`). Two test-only screens in the test
+  module: `FixtureFourDigits` (`Number = i16`, `DRAWABLE_RANGE = FOUR_DIGITS`) and
+  `FixtureTenToTwenty` (`Number = u8`, `DRAWABLE_RANGE = 10..=20`).
+
+  | Test | Screen | Input | Expected |
+  |---|---|---|---|
+  | `no_reading_shows_dashes` | `FixtureFourDigits` | `None` | `NoReading` |
+  | `zero_is_shown` | `FixtureFourDigits` | `Integer(0)` | `Number(0)` |
+  | `largest_four_digit_value_is_shown` | `FixtureFourDigits` | `Integer(9999)` | `Number(9999)` |
+  | `smallest_negative_value_is_shown` | `FixtureFourDigits` | `Integer(-999)` | `Number(-999)` |
+  | `five_digit_value_is_too_high` | `FixtureFourDigits` | `Integer(10000)` | `TooHigh` |
+  | `four_digit_negative_is_too_low` | `FixtureFourDigits` | `Integer(-1000)` | `TooLow` |
+  | `value_beyond_i16_is_too_high` | `FixtureFourDigits` | `Integer(70000)` | `TooHigh` |
+  | `value_beyond_i16_is_too_low` | `FixtureFourDigits` | `Integer(-70000)` | `TooLow` |
+  | `largest_i32_is_too_high` | `FixtureFourDigits` | `Integer(i32::MAX)` | `TooHigh` |
+  | `smallest_i32_is_too_low` | `FixtureFourDigits` | `Integer(i32::MIN)` | `TooLow` |
+  | `true_shows_on` | `FixtureFourDigits` | `Bool(true)` | `On` |
+  | `false_shows_off` | `FixtureFourDigits` | `Bool(false)` | `Off` |
+  | `below_range_is_too_low` | `FixtureTenToTwenty` | `Integer(5)` | `TooLow` |
+  | `range_start_is_shown` | `FixtureTenToTwenty` | `Integer(10)` | `Number(10)` |
+  | `range_end_is_shown` | `FixtureTenToTwenty` | `Integer(20)` | `Number(20)` |
+  | `above_range_is_too_high` | `FixtureTenToTwenty` | `Integer(25)` | `TooHigh` |
+  | `below_number_type_is_too_low` | `FixtureTenToTwenty` | `Integer(-5)` | `TooLow` |
+  | `above_number_type_is_too_high` | `FixtureTenToTwenty` | `Integer(300)` | `TooHigh` |
 
 - [ ] **Step 2:** `cargo test-core`: fails to compile.
-- [ ] **Step 3: Implement.**
+- [ ] **Step 3: Implement** `Readout`, `NumericScreen`, `FOUR_DIGITS`, and
+  `readout_for`, and register the module in `lib.rs`.
 - [ ] **Step 4:** `cargo test-core`: passes.
 - [ ] **Step 5:** Gate, review, commit: `feat(core): add display readout rule`.
 
@@ -224,14 +256,15 @@ associated type (E0191, section 4).
 **Files:**
 - Modify: `src/moisture_sensor.rs` (`Sample`, `MoistureGauge`,
   `MoistureSensor::run`, `sample`)
-- Create: `src/display.rs` (`Tm1637Display`, `display_loop`)
+- Create: `src/display.rs` (`Tm1637Display`, `Draw`, `Tm1637Screen`,
+  `display_loop`)
 - Modify: `src/main.rs` (task array, `TASK_NAMES`, remove `sensor_display`
   and `TM1637DisplayT`)
 - Modify: `Cargo.toml` (add `embassy-futures`, already locked at 0.1.2)
 
 **Interfaces (section 4):**
 - Consumes: `Calibration` (Task 2), `Gauge`, `Reading`, `Value` (Task 3),
-  `shown_value` (Task 4).
+  `Readout`, `NumericScreen`, `FOUR_DIGITS`, `readout_for` (Task 4).
 - Produces:
   - `pub struct MoistureGauge { reading_id: &'static str, latest: Cell<Option<Sample>> }`,
     `MoistureGauge::new(reading_id: &'static str) -> Self`, private
@@ -240,8 +273,15 @@ associated type (E0191, section 4).
   - `MoistureSensor::new(calibration, pin, adc, refresh_interval: embassy_time::Duration) -> anyhow::Result<Self>`
   - `pub async fn MoistureSensor::run(&mut self, gauge: &MoistureGauge)`;
     private `fn sample(&mut self) -> anyhow::Result<Sample>`.
-  - `pub type Tm1637Display` (section 4) and
-    `pub async fn display_loop(gauge: &dyn Gauge, display: &mut Tm1637Display)`.
+  - `pub type Tm1637Display` (section 4).
+  - `pub trait Draw: NumericScreen { type Error: std::fmt::Debug; async fn show(&mut self, readout: Readout<Self::Number>) -> Result<(), Self::Error>; }`
+  - `pub struct Tm1637Screen(Tm1637Display)` with
+    `pub async fn init(display: Tm1637Display) -> Result<Self, tm1637_embedded_hal::Error<GpioError>>`,
+    `impl NumericScreen` (`Number = i16`, `DRAWABLE_RANGE = FOUR_DIGITS`), and
+    `impl Draw`.
+  - `pub async fn display_loop<S: Draw>(gauge: &dyn Gauge, screen: &mut S)`.
+  - `main.rs` keeps `mod display;` private (section 4: `pub mod` makes
+    `async_fn_in_trait` fire and fails the gate).
   - In `main.rs`: `const TASK_NAMES: [&str; 2] = ["moisture sensor", "display"];`
     (grows in Tasks 10 and 13).
 
@@ -249,7 +289,11 @@ associated type (E0191, section 4).
 can be shared while `&mut MoistureSensor` can't; privacy per module, so only
 the sensor calls `store`; implementing a foreign trait for a local type;
 `Result` versus `Option`; `async fn` and `Timer::after`; boxed trait-object
-futures; `join_array` versus `select_array` (section 5).
+futures; `join_array` versus `select_array` (section 5); a supertrait
+(`Draw: NumericScreen`); `async fn` in a trait and why it isn't dyn
+compatible; the orphan rule and the newtype around the driver; a
+constructor that does the setup (`Tm1637Screen::init`) so an uninitialized
+screen can't exist.
 
 **Questions:** Why does `run` take `&mut self` but `display_loop` only
 `&dyn Gauge`? What does `select_array` return, and why can `TASK_NAMES[index]`
@@ -264,11 +308,18 @@ not go out of bounds?
 - [ ] **Step 3: `run()`** with the change-only logging from section 4 (local
   `failing: bool`, `warn` with `{e:#}` on the first error, `info` on
   recovery, `debug` on every `Ok`) and a 500 ms refresh interval.
-- [ ] **Step 4: `display.rs`.** Every 500 ms, `shown_value(gauge.latest())`:
-  `Some(n)` draws with `r_u16_4`, `None` draws `----`. Write failures use the
+- [ ] **Step 4: `display.rs`.** `Draw`, `Tm1637Screen` (`init`, both impls),
+  and `display_loop`. Every 500 ms,
+  `screen.show(readout_for::<S>(gauge.latest())).await`. `show` draws per the
+  table in section 4: `Number(n)` with `options().r_i16_4(n)` (correct for
+  zero in 0.5.3), and each word as the full 4-character string
+  (`"----"`, `"HIGH"`, `"  LO"`, `"  On"`, `" OFF"`) with
+  `options().str(..)`, because `Align<4>` doesn't pad. Write failures use the
   same change-only logging.
-- [ ] **Step 5: `main.rs`.** Build the 2-task array with explicit type
-  `[Pin<Box<dyn Future<Output = ()> + '_>>; 2]`, then
+- [ ] **Step 5: `main.rs`.** Build the display with
+  `block_on(display::Tm1637Screen::init(tm1637))` (it replaces today's
+  separate `init()` call), and pass `&mut screen` to `display_loop`. Build
+  the 2-task array with explicit type `[Pin<Box<dyn Future<Output = ()> + '_>>; 2]`, then
   `let ((), index) = block_on(select_array(tasks));` and return an error
   naming `TASK_NAMES[index]`. Until Task 6, `main` returns that error.
 - [ ] **Step 6: Board.** Percentage shows as before; dashes for the first

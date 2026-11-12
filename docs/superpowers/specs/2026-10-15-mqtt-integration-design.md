@@ -13,6 +13,15 @@ applied): [section 6](#6-errors-and-logging), the `fak_core::link` block in
 section 2, the `fak-core` notes in section 3, and the section 4 revisions
 (`fak-core/src/moisture.rs`, the tests, and `fak_core::readout`).
 
+Revised on 2026-11-06, reviewed twice (findings applied), pending the
+owner's approval: the display rule in section 4 became display-independent.
+Changed parts: the `readout` tests bullet, `fak-core/src/readout.rs` (`Readout<N>`,
+the `NumericScreen` trait, `FOUR_DIGITS`, `readout_for`), `src/display.rs` (the
+`Draw` trait, `Tm1637Screen`, generic `display_loop`), the display lines of
+the section 5 boot sequence, and section 8 items 4 and 5. The earlier review
+of `fak_core::readout` mentioned above covered the replaced `shown_value`
+version.
+
 This document describes how the `lector-humedad` firmware (ESP32-C3 Super Mini,
 target `riscv32imc-esp-espidf`) connects to WiFi and publishes moisture
 readings to the `fak` MQTT broker.
@@ -872,9 +881,147 @@ All in `fak-core`, run with `cargo test-core`:
   strings.
 - `payload`: the exact JSON for `Value::Integer` (including a negative one),
   `Value::Bool`, `online`, and `OFFLINE`.
-- `readout`: `None`, 0, 9999, 10000, a negative integer, and a `Bool`
-  ([the display rule](#srcdisplayrs-new)).
+- `readout`: `readout_for::<FixtureFourDigits>` with `None`, 0, 9999, -999, 10000,
+  -1000, 70000, -70000, `i32::MAX`, `i32::MIN`, `Bool(true)`, and
+  `Bool(false)`; `readout_for::<FixtureTenToTwenty>` with 5 (`TooLow`), 10 and 20
+  (`Number`), 25 (`TooHigh`), -5 (`TooLow`), and 300 (`TooHigh`)
+  ([the display rule](#fak-coresrcreadoutrs-new)). Both are test-only
+  screens. `FixtureFourDigits` uses `Number = i16` and `DRAWABLE_RANGE = FOUR_DIGITS`, the
+  same constant the firmware uses, so the test range can't drift from the real
+  one. `FixtureTenToTwenty` uses `Number = u8` and `DRAWABLE_RANGE = 10..=20`: 25 fits in a `u8`
+  but is above the range, and -5 and 300 don't fit in a `u8` at all, so the
+  three `TooHigh`/`TooLow` paths are each covered.
 - `link`: each row of the table in [`wifi::monitor`](#wifimonitor).
+
+### `fak-core/src/readout.rs` (new)
+
+The display rule is split in two: what a reading means, which is the same for
+every display, and whether it fits, which depends on the display. `fak-core`
+holds the meaning, the rule that applies a screen's capacity to it, and the
+capacity of each kind of screen. The firmware draws the result.
+
+```rust
+use std::ops::RangeInclusive;
+
+use crate::gauge::{Reading, Value};
+
+/// What a screen shows for one reading. `N` is the screen's number type.
+///
+/// Build it with `readout_for`, which keeps `Number` inside the screen's
+/// `DRAWABLE_RANGE`. A hand-built `Number` outside that range is a bug; what a
+/// screen draws for it is up to the screen (the TM1637 clamps).
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Readout<N> {
+    /// An integer inside the screen's `NumericScreen::DRAWABLE_RANGE`.
+    Number(N),
+    /// An integer above the screen's `NumericScreen::DRAWABLE_RANGE`.
+    TooHigh,
+    /// An integer below the screen's `NumericScreen::DRAWABLE_RANGE`.
+    TooLow,
+    /// `Bool(true)`.
+    On,
+    /// `Bool(false)`.
+    Off,
+    /// No reading yet, or the last read failed.
+    NoReading,
+}
+
+/// The capacity of a kind of screen.
+pub trait NumericScreen {
+    /// The number type the screen's driver takes: a primitive integer type.
+    type Number: TryFrom<i32> + PartialOrd + Copy;
+    /// The integers this screen can draw. Must not be empty.
+    const DRAWABLE_RANGE: RangeInclusive<Self::Number>;
+}
+
+/// What a 4-digit 7-segment display can draw: four characters, and a
+/// negative number spends one on the minus sign.
+pub const FOUR_DIGITS: RangeInclusive<i16> = -999..=9999;
+
+#[must_use]
+pub fn readout_for<S: NumericScreen>(reading: Option<Reading>) -> Readout<S::Number> {
+    let Some(Reading { value, .. }) = reading else {
+        return Readout::NoReading;
+    };
+    match value {
+        Value::Bool(true) => Readout::On,
+        Value::Bool(false) => Readout::Off,
+        Value::Integer(v) => match S::Number::try_from(v) {
+            Ok(n) if S::DRAWABLE_RANGE.contains(&n) => Readout::Number(n),
+            Ok(n) if n > *S::DRAWABLE_RANGE.end() => Readout::TooHigh,
+            Err(_) if v > 0 => Readout::TooHigh,
+            _ => Readout::TooLow,
+        },
+    }
+}
+```
+
+Design notes:
+
+- `readout_for` converts and checks the range in one place, and returns the
+  number already in the type the screen's driver takes. The TM1637 screen
+  receives a `Readout<i16>` and passes the `i16` straight to `r_i16_4`, so
+  drawing has no conversion that can fail and no reason to panic. An earlier
+  draft returned `Number(i32)` and left `i16::try_from` to the screen. That
+  `Err` could only mean a bug in `readout_for`, and the project rule for
+  broken invariants (`expect`, section 6) would have rebooted the board over a
+  number that didn't fit. The reader rejected that as out of proportion
+  (2026-11-06).
+- The inner `match` has four arms:
+  - `Ok(n)` inside `DRAWABLE_RANGE`: the number.
+  - `Ok(n)` above `DRAWABLE_RANGE.end()`: `TooHigh`. The comparison is with the
+    range's end, not with zero, so it is correct for ranges that don't contain
+    zero, such as `10..=20`.
+  - `Err(_)` with `v > 0`: `v` doesn't fit in `S::Number` at all, and is
+    above it. Comparing with zero is correct here, because every primitive
+    integer type (`i8` to `i128`, `u8` to `u128`) contains 0, so a value
+    outside the type is above it when positive and below it when negative.
+    `NonZero` types meet the trait's bounds but don't contain 0, and are out
+    of scope: with `Number = NonZeroI32`, 0 would come out as `TooLow`.
+  - Everything else (`Ok` below the range, `Err` with `v <= 0`): `TooLow`.
+    One `_` arm instead of two arms with the same body, which
+    `clippy::match_same_arms` (pedantic) would flag.
+- The guards are needed because `DRAWABLE_RANGE` can't be used as a range pattern
+  for the number: it is a `RangeInclusive` value, so matching an `i16`
+  against it fails with E0308 (mismatched types). Separate `MIN` and `MAX`
+  consts on the trait wouldn't help either: `S::MIN..=S::MAX` as a pattern
+  fails with `error[E0158]: constant pattern cannot depend on generic
+  parameters` (both checked with rustc 1.100 nightly, 2026-11-06). The last arm has no guard,
+  because guarded arms don't count toward exhaustiveness.
+- `Number` is an associated type, bounded by what `readout_for` needs:
+  `TryFrom<i32>` to convert from `Value::Integer`, `PartialOrd` to compare
+  with the range's ends, and `Copy` so `Readout` stays `Copy`. A screen with
+  room for any `i32` (for example a 16x2 LCD) sets `Number = i32` and
+  `DRAWABLE_RANGE = i32::MIN..=i32::MAX`. `TryFrom<i32> for i32` comes from the
+  standard library's blanket impl with `Error = Infallible`, so the `Err` arm
+  never runs for it.
+- `NumericScreen::Number` (the associated type: which number type a screen
+  takes) and `Readout::Number` (the variant: a number to draw) share a name
+  but are different things. In `Draw::show`, `Readout<Self::Number>` uses the
+  first, and a `Readout::Number(n)` arm matches the second.
+- `DRAWABLE_RANGE` has the type `RangeInclusive<Self::Number>`, so the compiler
+  checks that its ends fit the driver's type: `-999..=70000` doesn't compile
+  for `i16`. An empty `DRAWABLE_RANGE` (for example `20..=10`) does compile, and
+  makes every integer `TooHigh` or `TooLow`. The doc comment states the
+  contract.
+- `NumericScreen` holds only capacity, with no drawing and no `async`. It
+  describes a screen only from the side `readout_for` depends on: which
+  integers it can draw. Drawing is I/O and lives in the firmware (`Draw` in `src/display.rs`). This keeps
+  `fak-core` pure, and the test screens need only `type Number` and
+  `const DRAWABLE_RANGE`.
+- `FOUR_DIGITS` lives in `fak-core` so the tests and the firmware's TM1637
+  screen share one value.
+- Anyone can still write `Readout::<i16>::Number(12345)`, because the fields
+  of an enum variant are always public. It wouldn't panic, but `r_i16_4` would
+  clamp it to `9999`. The guarantee rests on a convention: `readout_for` is
+  the only producer, and the doc comment on `Readout` says so. The type that
+  would enforce it is deferred (section 8).
+- The function was called `shown_value` in an earlier version of this
+  section. It returns a `Readout`, not a `Value`, and with a screen parameter
+  `readout_for::<S>(reading)` reads as "the readout for this reading on `S`"
+  (decided 2026-11-06).
+- The module is `readout`, not `display`, so it can't be mixed up with the
+  firmware's own `crate::display`, which drives the TM1637.
 
 ### `src/display.rs` (new)
 
@@ -882,32 +1029,106 @@ All in `fak-core`, run with `cargo test-core`:
 pub type Tm1637Display =
     TM1637<4, Async, PinDriver<'static, Output>, PinDriver<'static, Output>, embassy_time::Delay>;
 
-pub async fn display_loop(gauge: &dyn Gauge, display: &mut Tm1637Display);
+/// A screen the firmware can draw a `Readout` on.
+pub trait Draw: NumericScreen {
+    type Error: std::fmt::Debug;
+
+    async fn show(&mut self, readout: Readout<Self::Number>) -> Result<(), Self::Error>;
+}
+
+/// The TM1637 module as a `NumericScreen` and a `Draw`.
+pub struct Tm1637Screen(Tm1637Display);
+
+impl Tm1637Screen {
+    /// Runs the driver's `init()` and wraps the display, so a
+    /// `Tm1637Screen` is always initialized.
+    pub async fn init(display: Tm1637Display) -> Result<Self, tm1637_embedded_hal::Error<GpioError>>;
+}
+
+impl NumericScreen for Tm1637Screen {
+    type Number = i16;
+    const DRAWABLE_RANGE: RangeInclusive<i16> = FOUR_DIGITS;
+}
+
+impl Draw for Tm1637Screen {
+    type Error = tm1637_embedded_hal::Error<GpioError>;
+
+    async fn show(&mut self, readout: Readout<i16>) -> Result<(), Self::Error>;
+}
+
+pub async fn display_loop<S: Draw>(gauge: &dyn Gauge, screen: &mut S);
 ```
 
-`Tm1637Display` moves here from `main.rs` (where it's `TM1637DisplayT` today).
-Every 500 ms, it asks `fak-core` what to show:
+Notes:
 
-```rust
-// fak_core::readout
-/// `Some(n)` to show `n`, `None` to show `----`.
-pub fn shown_value(reading: Option<Reading>) -> Option<u16>;
-```
+- `Draw: NumericScreen` makes `NumericScreen` a supertrait: every `Draw` is
+  also a `NumericScreen`, so `display_loop` can call `readout_for::<S>` and
+  `show` on the same `S`.
+- `type Error: std::fmt::Debug` puts the bound on the trait, so every caller
+  can log the error without a `where` clause.
+- `async fn show` is `async` because the TM1637 driver is (`Async` mode). The
+  `async_fn_in_trait` lint, which warns that callers can't require a `Send`
+  future, fires for any `pub` trait reachable from outside the crate, in a
+  binary crate too. `main.rs` declares `mod display;` (private, like
+  `mod moisture_sensor;` today), so `Draw` isn't reachable and the lint
+  doesn't fire, and no attribute is needed. `display` must stay private:
+  `pub mod display;` brings the warning back and fails
+  `clippy -D warnings` (checked with rustc 1.100 nightly, 2026-11-06; with
+  the module private, an `#[expect(async_fn_in_trait)]` is reported as
+  unfulfilled).
+- `Draw` is not dyn compatible: `async fn` in a trait makes `&dyn Draw` fail
+  with E0038. `display_loop` takes a generic `S: Draw`. The firmware has one
+  display chosen at compile time, so nothing needs `dyn` (see section 8 for
+  choosing one at runtime).
+- `Tm1637Screen` wraps the driver in a newtype because of the orphan rule:
+  the firmware can't implement a trait from `fak-core` (`NumericScreen`) on a
+  type from `tm1637-embedded-hal`, but it can on its own wrapper.
+- The error type is the driver's `tm1637_embedded_hal::Error<ERR>`
+  (`error.rs:5` in 0.5.3, re-exported at the crate root), where `ERR` is the
+  pins' error. `PinDriver` implements `embedded_hal::digital::ErrorType` with
+  `type Error = GpioError` (esp-idf-hal 0.47.0, `gpio.rs:1199`). The driver's
+  error implements `Debug` but not `std::error::Error`, as section 6 expects.
 
-- `Some` with `Value::Integer(v)` where `v` is in `0..=9999`: `Some(v)`,
-  shown with `r_u16_4`.
-- Otherwise (`None`, a `Bool`, a negative integer, or 10000 and above):
-  `None`, shown as `----`.
+Every 500 ms, `display_loop` calls
+`screen.show(readout_for::<S>(gauge.latest())).await`. What the TM1637 draws
+for each `Readout`:
 
-The upper bound is 9999, not `u16::MAX`, because `r_u16_4` clamps its input
-to 9999 (`tm1637-embedded-hal` 0.5.2, `numbers.rs:242`). Without the bound,
-12345 would show as `9999`: a wrong number that looks right.
+| Reading | `Readout` | TM1637 shows |
+|---|---|---|
+| `None` | `NoReading` | `----` |
+| `Integer(v)`, `v` in `-999..=9999` | `Number(v)` | the number, right-aligned |
+| `Integer(v)`, `v > 9999` | `TooHigh` | `HIGH` |
+| `Integer(v)`, `v < -999` | `TooLow` | `  LO` |
+| `Bool(true)` | `On` | `  On` |
+| `Bool(false)` | `Off` | ` OFF` |
 
-The module is `readout`, not `display`, so it can't be mixed up with the
-firmware's own `crate::display`, which drives the TM1637.
+The TM1637 bounds are -999 and 9999 because the display draws at most four
+characters, and a negative number spends one on the minus sign. Without them,
+`r_u16_4` and `r_i16_4` would clamp (`tm1637-embedded-hal` 0.5.3,
+`numbers.rs:240` and `numbers.rs:672`), and 12345 would show as `9999`: a
+wrong number that looks right. Out-of-range values get a word instead of
+dashes so the display tells which side the value fell off.
+
+The words are limited to what a 7-segment digit can draw.
+`mappings::from_ascii_byte` maps `H`, `I`, `G`, `L`, `O`, `F`, lowercase `n`,
+and `-`, but has no `W` and no uppercase `N` (both fall to `_ => 0`, a blank
+digit). That is why the words are `LO` and `On` rather than `LOW` and `ON`
+(decided 2026-11-06).
+
+`Tm1637Screen::show` draws every `Number(n)` with `r_i16_4(n)`. In 0.5.2,
+`r_i16_4(0)` draws `  -0` (zero falls through to the negative branch). The
+fix (JadKHaddad/tm1637#31) shipped in 0.5.3, which the firmware locks; there
+`r_i16_4(0)` draws `   0` (decided 2026-11-06). Each word is written as the
+full 4-character string from the table (`"----"`, `"HIGH"`, `"  LO"`,
+`"  On"`, `" OFF"`), for example `options().str("  LO").display().await`.
+`str` goes through `StrParser`, which calls `from_ascii_byte` (`str.rs:5`).
+The padding matters: `Align<4>::align` only truncates and writes from
+position 0 (`align.rs:20-37`), so a bare `"LO"` would write two digits and
+leave the previous right-hand digits on the display.
 
 A failed write to the display is logged as a warning on the first failure
-only, the same way as the sensor, and retried on the next tick.
+only, the same way as the sensor, and as `info` when a write succeeds again.
+It is retried on the next tick.
 
 The display never touches sensor hardware.
 
@@ -1005,8 +1226,8 @@ fn run() -> anyhow::Result<()> {
         Duration::from_millis(500),
     )
     .context("creating the moisture sensor")?;
-    let mut display = /* TM1637 on GPIO5 (CLK) and GPIO6 (DIO) */;
-    block_on(display.init())
+    let tm1637 = /* TM1637 on GPIO5 (CLK) and GPIO6 (DIO) */;
+    let mut screen = block_on(display::Tm1637Screen::init(tm1637))
         .map_err(|e| anyhow::anyhow!("{e:?}"))
         .context("initializing the display")?;
     let gauges: [&dyn Gauge; 1] = [&moisture_gauge];
@@ -1014,7 +1235,7 @@ fn run() -> anyhow::Result<()> {
     // 3. Run forever. The tasks never end; if one does, it's a bug, so restart.
     let tasks: [Pin<Box<dyn Future<Output = ()> + '_>>; 4] = [
         Box::pin(sensor.run(&moisture_gauge)),
-        Box::pin(display::display_loop(&moisture_gauge, &mut display)),
+        Box::pin(display::display_loop(&moisture_gauge, &mut screen)),
         Box::pin(mqtt::publish_loop(&gauges, &mqtt)),
         Box::pin(wifi::monitor(&mut wifi)),
     ];
@@ -1051,7 +1272,7 @@ Notes:
   `async fn` returns its own anonymous future type, so the explicit
   `Pin<Box<dyn Future<Output = ()> + '_>>` annotation coerces all four to the
   same boxed trait object type.
-- The borrows coexist: `&mut sensor`, `&mut display`, and `&mut wifi` are each
+- The borrows coexist: `&mut sensor`, `&mut screen`, and `&mut wifi` are each
   borrowed once, and `moisture_gauge` is only borrowed shared (by `sensor.run`,
   `display_loop`, and `gauges`).
 - The `Online` message at boot comes from the callback's first `Connected`, so
@@ -1377,13 +1598,39 @@ These are separate pieces of future work.
 3. **Full WiFi reconnection handling.** The WiFi monitor makes one reconnect
    attempt and then restarts after 60 seconds. A fuller version would retry
    with backoff and keep the board running through long outages.
-4. **Status indication.** A buzzer sound in `fail_and_restart` (active or
+4. **Choosing the screen at runtime.** `Draw` isn't dyn compatible (section
+   4), so the display is picked at compile time. Picking it from
+   configuration would need an enum over the screens, or a second trait with
+   no associated items and no `async fn`. Because `Readout<N>` differs per
+   screen, that trait can't take a `Readout`. It would take the reading, for
+   example `fn show_reading(&mut self, r: Option<Reading>) -> Pin<Box<dyn
+   Future<Output = anyhow::Result<()>> + '_>>`, with a blanket impl for every
+   `S: Draw` that calls `readout_for::<S>`.
+5. **A type that enforces `readout_for`'s range.** Today anyone can write
+   `Readout::<i16>::Number(12345)`. A newtype with a private field,
+   `pub struct Drawable<S: NumericScreen>(S::Number)`, built only through
+   `Drawable::new(n) -> Option<Self>`, which checks `S::DRAWABLE_RANGE`, would make
+   that fail to compile outside the `readout` module (E0603, checked
+   2026-11-06). The cost: `Readout<N>` becomes `Readout<S>` holding
+   `Number(Drawable<S>)`, so the screen type appears in every signature. And
+   `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` on `Readout<S>` and
+   `Drawable<S>` doesn't work: `derive` requires `S` itself to be `Debug`,
+   `Clone`, `Copy` and so on, and `Tm1637Screen` owns `PinDriver`s, which are
+   none of those (esp-idf-hal 0.47.0, `gpio.rs:422`, and `Drop` at
+   `gpio.rs:1164`). The impls would be written by hand, bounded on
+   `S::Number`, which then needs `Debug + Eq` in `NumericScreen::Number`'s
+   bound. Another option is to key `Drawable` on a zero-sized capacity marker
+   type that implements `NumericScreen`, instead of on the screen that owns
+   the pins. Worth it once something besides `readout_for`
+   builds a `Readout`, such as a boot self-test showing `8888` or an error
+   code.
+6. **Status indication.** A buzzer sound in `fail_and_restart` (active or
    passive buzzer still to decide; free and safe pins are GPIO1, GPIO3, GPIO4,
    GPIO7, and GPIO10). LEDs or display error codes are undecided.
-5. **Remaining `fak/v1` topics.** `meta/identity`, `meta/capabilities` (unit,
+7. **Remaining `fak/v1` topics.** `meta/identity`, `meta/capabilities` (unit,
    minimum, maximum, and interval per reading; a `Value::kind()` method would
    help), `meta/metrics`, and `actionables/*`.
-6. **Migrate to per-message properties upstream.** When
+8. **Migrate to per-message properties upstream.** When
    [espressif/esp-mqtt#343](https://github.com/espressif/esp-mqtt/pull/343),
    [esp-rs/embedded-svc#87](https://github.com/esp-rs/embedded-svc/pull/87),
    and [esp-rs/esp-idf-svc#678](https://github.com/esp-rs/esp-idf-svc/pull/678)
@@ -1392,11 +1639,11 @@ These are separate pieces of future work.
    `espressif/mqtt` version, and the `esp-idf-svc` version (plus
    `embedded-svc`, if its version moves) change; ESP-IDF itself doesn't. As
    of 1.1.0, the esp-mqtt part hasn't shipped.
-7. **Fractional values.** If a sensor needs them, add a fixed-point variant
+9. **Fractional values.** If a sensor needs them, add a fixed-point variant
    such as `Decimal { mantissa: i32, scale: u8 }` instead of floats. The
    ESP32-C3 has no floating-point unit.
-8. **Integers beyond `i32`.** Change `Integer(i32)` to `Integer(i64)`.
-9. **Fixes in `fak-docs` and `fak-supporting`.**
+10. **Integers beyond `i32`.** Change `Integer(i32)` to `Integer(i64)`.
+11. **Fixes in `fak-docs` and `fak-supporting`.**
    - Readings use `"value"`, but the actionable `state` example uses `"v"`.
      Pick one.
    - Document the boolean payload (`{"value": true}`).

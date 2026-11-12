@@ -1489,9 +1489,9 @@ dependencies = [
 
 [[package]]
 name = "tm1637-embedded-hal"
-version = "0.5.2"
+version = "0.5.3"
 source = "registry+https://github.com/rust-lang/crates.io-index"
-checksum = "94fca65a28b9ea25724f94887abafc7a84f83c001bae7117a026a4f627442088"
+checksum = "8b641ef101ebddd4ea9747cfa9125a51bacc6d2306c734a0f05acc2f5a15072d"
 dependencies = [
  "auto_enums",
  "duplicate",
