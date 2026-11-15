@@ -13,8 +13,20 @@ applied): [section 6](#6-errors-and-logging), the `fak_core::link` block in
 section 2, the `fak-core` notes in section 3, and the section 4 revisions
 (`fak-core/src/moisture.rs`, the tests, and `fak_core::readout`).
 
-Revised on 2026-11-06, reviewed twice (findings applied), pending the
-owner's approval: the display rule in section 4 became display-independent.
+Revised on 2026-11-15, decided by the owner after an evaluation of this
+spec against the locked sources, reviewed once independently (no blockers,
+findings applied), approved by the owner on 2026-11-15: the WiFi
+monitor retries on every check (section 2), `display_loop` skips unchanged
+redraws and `MoistureGauge::millivolts` is gone (section 4), CI writes its
+own `cfg.toml` (section 5), and section 8 gains item 12. The same day, the
+display gained error codes for setup failures: `fak_core::fault` and
+`Readout::Fault` (section 4), the display-first boot sequence with
+`setup_network` (section 5), and the changes that follow in sections 1, 6,
+and 8 (items 5 and 6).
+
+Revised on 2026-11-06, reviewed twice (findings applied), and implemented in
+`fak-core` (commit `5e87c5a`): the display rule in section 4 became
+display-independent.
 Changed parts: the `readout` tests bullet, `fak-core/src/readout.rs` (`Readout<N>`,
 the `NumericScreen` trait, `FOUR_DIGITS`, `readout_for`), `src/display.rs` (the
 `Draw` trait, `Tm1637Screen`, generic `display_loop`), the display lines of
@@ -76,6 +88,8 @@ Publish this board's moisture readings to the `fak` broker, following the
 - A `Gauge` trait that decouples sensors from MQTT.
 - A redesign of the moisture sensor (types, calibration, self-refresh).
 - The TM1637 display as a read-only consumer of a gauge.
+- An error code on the display (`E-01` to `E-03`) when WiFi, SNTP, or MQTT
+  setup fails.
 
 ### Out of scope
 
@@ -110,15 +124,17 @@ project uses the same board:
 - **NVS for radio calibration.** Pass `EspDefaultNvsPartition::take()` to
   `EspWifi::new()`, so the radio calibration data persists across reboots.
   Without it, `phy_init` logs "NVS has not been initialized" on every boot.
-- **8 dBm transmit power.** Call `esp_wifi_set_max_tx_power(30)` right after
-  `wifi.start()`. The unit is 0.25 dBm, so 30 means 8 dBm. This works around
+- **Reduced transmit power.** Call `esp_wifi_set_max_tx_power(30)` right after
+  `wifi.start()`. The unit is 0.25 dBm, and the driver rounds the value down
+  to a supported step: 30 falls in `[28, 33]`, which gives 28, so 7 dBm
+  (`esp_wifi.h:1173-1174` in ESP-IDF v6.1). This works around
   the antenna design of ESP32-C3 Super Mini v1 boards. See
   <https://forum.arduino.cc/t/no-wifi-connect-with-esp32-c3-super-mini/1324046/24>.
 - **Connection retries.** Up to 5 attempts, using `BlockingWifi` during setup.
   After each failure, call `disconnect()` and wait 500 ms. After the last
   failure, return the error.
 
-`run()` calls it once, during setup, before anything else runs.
+`connect_wifi` (section 5) calls it once, during setup.
 
 ### `wifi::monitor`
 
@@ -130,10 +146,13 @@ Every 5 seconds, checks `wifi.is_up()` (link and IP address). `is_connected()`
 only checks the radio link, and a link without an IP address can't reach the
 broker. `is_up()` returns `Result<bool>`; an `Err` counts as "down".
 
-- When WiFi goes down, it calls `wifi.connect()` once. That's the
+- While WiFi is down, it calls `wifi.connect()` on every check. That's the
   non-blocking `EspWifi` method, not `BlockingWifi`'s, so it doesn't stall the
   executor. Neither ESP-IDF nor `esp-idf-svc` reconnects a station
-  automatically, so without this call every drop would end in a restart.
+  automatically, and `esp_wifi_connect` makes a single attempt
+  (`esp_wifi.h:483` in ESP-IDF v6.1). One call per drop would only recover if
+  the access point were already back when that one attempt ran, so an access
+  point reboot would always end in a restart.
 - If WiFi is still down 60 seconds after the drop, it calls
   `restart::fail_and_restart`.
 
@@ -153,6 +172,7 @@ pub const DOWN_LIMIT: core::time::Duration = core::time::Duration::from_secs(60)
 pub enum Action {
     Wait,
     Reconnect,
+    Retry,
     Recovered,
     Restart,
 }
@@ -173,7 +193,7 @@ impl LinkMonitor {
 | `true` | `None` | `Wait` | `None` |
 | `true` | `Some(_)` | `Recovered` | `None` |
 | `false` | `None` | `Reconnect` | `Some(now)` |
-| `false` | `Some(t)`, `now - t` < `DOWN_LIMIT` | `Wait` | unchanged |
+| `false` | `Some(t)`, `now - t` < `DOWN_LIMIT` | `Retry` | unchanged |
 | `false` | `Some(t)`, `now - t` ≥ `DOWN_LIMIT` | `Restart` | unchanged |
 
 - The elapsed time is `now.saturating_sub(t)`. Plain `-` on a `Duration`
@@ -193,14 +213,33 @@ impl LinkMonitor {
 The async `monitor` only reads `is_up()` and the clock, calls `step`, and acts
 on the result:
 
-- `Reconnect`: logs a warning, then calls `wifi.connect()`. If that call
-  itself returns `Err`, it logs the error as a warning and carries on. The
-  next checks return `Wait` until the link is back or 60 seconds have passed.
+- `Reconnect` (the first check of a drop): logs a warning, then calls
+  `wifi.connect()`. If that call itself returns `Err`, it logs the error as a
+  warning and carries on.
+- `Retry` (every later check while still down): calls `wifi.connect()` again.
+  An `Err` here is logged at `debug` only. The call may fail while the
+  previous attempt is still in progress (not confirmed on the board), and a
+  warning every 5 seconds would break the "log changes, not repetitions"
+  rule. `Reconnect` and `Retry` are separate results so that `step`, which
+  is tested, tells the first check of a drop from the later ones, and the
+  firmware needs no flag of its own.
+- Both skip the `wifi.connect()` call when `wifi.is_connected()` returns
+  `Ok(true)`. `is_up()` is link plus IP address (`esp-idf-svc`
+  `src/wifi.rs:1696-1710`), so "down" includes a station that is already
+  associated and waiting for DHCP. ESP-IDF says to disconnect before calling
+  `esp_wifi_connect` on a connected station (`esp_wifi.h:479`), and what the
+  call does otherwise is inside the closed-source WiFi library. Skipping it
+  avoids depending on that. An `Err` from `is_connected()` counts as not
+  connected.
+- Open, to check on the board: whether the WiFi library logs its own warning
+  each time a `connect()` is rejected. Its tag (`wifi`) is at the default
+  Info level, so such a line would print every 5 seconds whatever the Rust
+  level is. If it does, lower that tag's level in `logging::init`.
 - `Recovered`: logs at `info`.
 - `Restart`: calls `fail_and_restart` with an error saying WiFi was down for
   60 seconds.
 
-Tests cover each row of the table, including exactly 59.999 s (`Wait`) and
+Tests cover each row of the table, including exactly 59.999 s (`Retry`) and
 exactly 60 s (`Restart`), and a recovery followed by a new drop, which must
 return `Reconnect` again. `now` is a `core::time::Duration`, because
 `fak-core` doesn't depend on `embassy-time`. The firmware converts with
@@ -736,8 +775,9 @@ pub enum CalibrationError {
     DryNotAboveWet { dry_mv: u16, wet_mv: u16 },
 }
 
-// impl fmt::Display: "dry reading (<dry_mv> mV) must be above wet reading (<wet_mv> mV)"
-// impl core::error::Error (empty body: the defaults are enough)
+// #[derive(thiserror::Error)] on the enum generates both impls:
+// - fmt::Display: "dry reading (<dry_mv> mV) must be above wet reading (<wet_mv> mV)"
+// - core::error::Error
 ```
 
 `new` is a `const fn`: a function the compiler can also run while it builds,
@@ -747,7 +787,7 @@ that to check its calibration at build time (see
 
 ```rust
 // src/main.rs
-const MOISTURE_01_CALIBRATION: Calibration = match Calibration::new(2309, 780) {
+const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309, 780) {
     Ok(calibration) => calibration,
     Err(_) => panic!("moisture-01: dry reading must be above wet reading"),
 };
@@ -772,9 +812,10 @@ that `std` re-exports as `std::error::Error` (stable since Rust 1.81). `?` and
 code needs nothing from the operating system.
 
 `CalibrationError` is a typed error, not `anyhow`, because `fak-core` is a
-library (see [Errors](#errors)). It's written by hand instead of with
-`thiserror`: with one variant, the two `impl` blocks are short, and writing
-them once shows what `thiserror` would generate.
+library (see [Errors](#errors)). Its `Display` and `Error` impls come from
+`thiserror`'s derive, with the message in an `#[error("..")]` attribute.
+`thiserror` is `fak-core`'s only dependency. It only generates code, so it
+doesn't break the boundary rule (no ESP-IDF, no logging).
 
 ### `src/moisture_sensor.rs` (revised)
 
@@ -805,7 +846,6 @@ pub struct MoistureSensor<'d, C: AdcChannel> {
 | `MoistureGauge::new(reading_id)` | public | Starts with `latest` set to `None`. |
 | `MoistureGauge::store(&self, Option<Sample>)` | private | The only way to write `latest`. |
 | `impl Gauge for MoistureGauge` | public | `latest()` maps the sample to `Reading { value: Value::from(percent), ts }`. |
-| `MoistureGauge::millivolts(&self) -> Option<u16>` | public, not in the trait | For calibration and debug logs. |
 | `MoistureSensor::new(calibration, pin, adc, refresh_interval)` | public | Each sensor unit gets its own calibration and refresh interval. |
 | `MoistureSensor::run(&mut self, gauge: &MoistureGauge)` | public, `async` | Loops forever: calls `self.sample()`, stores `Some` or `None`, logs (see below), then `Timer::after(refresh_interval).await`. |
 | `MoistureSensor::sample(&mut self) -> anyhow::Result<Sample>` | private | Averages 30 `read()` calls, computes the percent, stamps `ts`. Returns the first error it hits. |
@@ -892,6 +932,9 @@ All in `fak-core`, run with `cargo test-core`:
   but is above the range, and -5 and 300 don't fit in a `u8` at all, so the
   three `TooHigh`/`TooLow` paths are each covered.
 - `link`: each row of the table in [`wifi::monitor`](#wifimonitor).
+- `fault`: the code and the text of each `Fault` variant (`1` and `E-01` for
+  `Wifi`, `2` and `E-02` for `Sntp`, `3` and `E-03` for `Mqtt`)
+  ([error codes](#fak-coresrcfaultrs-new)).
 
 ### `fak-core/src/readout.rs` (new)
 
@@ -903,13 +946,17 @@ capacity of each kind of screen. The firmware draws the result.
 ```rust
 use std::ops::RangeInclusive;
 
+use crate::fault::Fault;
 use crate::gauge::{Reading, Value};
 
-/// What a screen shows for one reading. `N` is the screen's number type.
+/// What a screen shows: the meaning of one reading, or a fault. `N` is the
+/// screen's number type.
 ///
-/// Build it with `readout_for`, which keeps `Number` inside the screen's
-/// `DRAWABLE_RANGE`. A hand-built `Number` outside that range is a bug; what a
-/// screen draws for it is up to the screen (the TM1637 clamps).
+/// For a reading, build it with `readout_for`, which keeps `Number` inside
+/// the screen's `DRAWABLE_RANGE`. A hand-built `Number` outside that range is
+/// a bug; what a screen draws for it is up to the screen (the TM1637 clamps).
+/// Setup builds `NoReading` and `Fault` directly, before any reading
+/// exists. `readout_for` is the only producer of `Number`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readout<N> {
     /// An integer inside the screen's `NumericScreen::DRAWABLE_RANGE`.
@@ -924,6 +971,8 @@ pub enum Readout<N> {
     Off,
     /// No reading yet, or the last read failed.
     NoReading,
+    /// The board hit a fault. Never returned by `readout_for`.
+    Fault(Fault),
 }
 
 /// The capacity of a kind of screen.
@@ -1014,7 +1063,7 @@ Design notes:
 - Anyone can still write `Readout::<i16>::Number(12345)`, because the fields
   of an enum variant are always public. It wouldn't panic, but `r_i16_4` would
   clamp it to `9999`. The guarantee rests on a convention: `readout_for` is
-  the only producer, and the doc comment on `Readout` says so. The type that
+  the only producer of `Number`, and the doc comment on `Readout` says so. The type that
   would enforce it is deferred (section 8).
 - The function was called `shown_value` in an earlier version of this
   section. It returns a `Readout`, not a `Value`, and with a screen parameter
@@ -1022,6 +1071,74 @@ Design notes:
   (decided 2026-11-06).
 - The module is `readout`, not `display`, so it can't be mixed up with the
   firmware's own `crate::display`, which drives the TM1637.
+- `Readout::Fault` is a variant, not a separate method on the firmware's
+  `Draw` trait, so a screen's `show` has one `match` that covers everything
+  the screen can be asked to draw. Adding the variant makes that `match`
+  stop compiling (E0004, non-exhaustive patterns) until the screen draws
+  faults too. `readout_for` is unchanged: it matches on `Value`, not on
+  `Readout`, and a reading never becomes a fault.
+
+### `fak-core/src/fault.rs` (new)
+
+```rust
+use core::fmt;
+
+/// A failure the board shows as a code on its display.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum Fault {
+    /// WiFi didn't connect during setup.
+    Wifi,
+    /// The clock didn't sync over SNTP during setup.
+    Sntp,
+    /// MQTT didn't connect during setup.
+    Mqtt,
+}
+
+impl Fault {
+    /// The number shown after `E-`. Always between 1 and 99.
+    #[must_use]
+    pub const fn code(self) -> u8 {
+        match self {
+            Fault::Wifi => 1,
+            Fault::Sntp => 2,
+            Fault::Mqtt => 3,
+        }
+    }
+}
+
+/// Writes the code as shown and logged: `E-01`, `E-02`, `E-03`.
+impl fmt::Display for Fault {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        write!(f, "E-{:02}", self.code())
+    }
+}
+```
+
+| Code | Variant | Meaning | Raised by |
+|---|---|---|---|
+| `E-01` | `Wifi` | WiFi didn't connect | `wifi::connect`, or reading the MAC address |
+| `E-02` | `Sntp` | The clock didn't sync | `sntp::sync` |
+| `E-03` | `Mqtt` | MQTT didn't connect (broker unreachable, or it refused the board) | `mqtt::start` or `mqtt::wait_connected` |
+
+Design notes:
+
+- The enum is the validation. Only the listed faults exist, each with one
+  code, so no code can be made up at the call site and no newtype is needed
+  around the number.
+- `code` has no wildcard arm, so a new variant doesn't compile until it gets
+  a number. Nothing checks that two variants don't share a number, or that a
+  number stays below 100; the tests pin each variant's code and text, and the
+  doc comment states the range.
+- The text `E-01` lives here, in `Display`, and not in each screen. The log
+  and the display then show the same code, and a host test checks its format.
+  `{:02}` pads to two digits, so the text is exactly four characters for
+  codes up to 99, which is what a 4-digit display needs.
+- `Fault` implements `Display` but not `core::error::Error`. It names a
+  failure for the person in front of the board. The cause stays in the
+  `anyhow::Error` that travels with it (see
+  [the boot sequence](#boot-sequence)).
+- Only setup failures have codes for now. Faults while the tasks run, such
+  as the WiFi monitor's restart, are deferred (section 8, item 6).
 
 ### `src/display.rs` (new)
 
@@ -1089,9 +1206,23 @@ Notes:
   `type Error = GpioError` (esp-idf-hal 0.47.0, `gpio.rs:1199`). The driver's
   error implements `Debug` but not `std::error::Error`, as section 6 expects.
 
-Every 500 ms, `display_loop` calls
-`screen.show(readout_for::<S>(gauge.latest())).await`. What the TM1637 draws
-for each `Readout`:
+Every 500 ms, `display_loop` computes `readout_for::<S>(gauge.latest())` and
+calls `screen.show(readout).await` only when the readout differs from the
+last one drawn. It keeps that one in a local
+`last_drawn: Option<Readout<S::Number>>`:
+
+- It starts as `None`, so the first readout is always drawn.
+- After a successful write it becomes `Some(readout)`.
+- After a failed write it goes back to `None`, so the next tick draws again
+  even if the value returned to what was on the display before.
+- Comparing works because `Readout` derives `PartialEq`, and
+  `S::Number: PartialOrd` already requires `PartialEq`.
+
+A moisture percentage changes rarely, so most ticks write nothing to the
+TM1637. The cost: a digit corrupted by electrical noise stays wrong until
+the value changes, because nothing rewrites it. That's accepted for now; a
+slow periodic redraw would be the fix. What the TM1637 draws for each
+`Readout`:
 
 | Reading | `Readout` | TM1637 shows |
 |---|---|---|
@@ -1101,6 +1232,14 @@ for each `Readout`:
 | `Integer(v)`, `v < -999` | `TooLow` | `  LO` |
 | `Bool(true)` | `On` | `  On` |
 | `Bool(false)` | `Off` | ` OFF` |
+| (none: built by setup) | `Fault(fault)` | `E-01`, `E-02`, or `E-03` |
+
+`display_loop` never produces `Fault`, because `readout_for` doesn't return
+it. Setup shows it directly, before the tasks start (see
+[the boot sequence](#boot-sequence)). `show` draws it with
+`options().str(&fault.to_string())`: `Fault`'s `Display` text is already the
+four characters to draw, and `from_ascii_byte` maps `E`, `-`, and the digits
+(`mappings.rs:602-646`).
 
 The TM1637 bounds are -999 and 9999 because the display draws at most four
 characters, and a negative number spends one on the minus sign. Without them,
@@ -1167,6 +1306,9 @@ pub struct Config {
 - `build.rs` fails the build if `cfg.toml` is missing, if a value still has a
   placeholder, or if a value is empty. With `#[default("")]`, a missing key
   silently becomes `""`, so the empty check is what catches it.
+- CI has no `cfg.toml`, because the file is gitignored. The workflow writes
+  one with made-up values (not the example's placeholders) before it runs
+  `devenv test`. `build.rs` stays strict and has no bypass.
 - `build.rs` keeps calling `embuild::espidf::sysenv::output()`.
 
 ### Which `Duration`
@@ -1185,7 +1327,7 @@ pub struct Config {
 ```rust
 use anyhow::Context as _; // adds .context() to Result and Option
 
-const MOISTURE_01_CALIBRATION: Calibration = match Calibration::new(2309, 780) {
+const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309, 780) {
     Ok(calibration) => calibration,
     Err(_) => panic!("moisture-01: dry reading must be above wet reading"),
 };
@@ -1200,51 +1342,152 @@ fn main() {
     }
 }
 
+/// What network setup hands over once everything is connected.
+struct Network {
+    wifi: EspWifi<'static>,
+    mqtt: MqttHandle,
+    /// Never read. Kept so the SNTP client stays alive and keeps the clock in sync.
+    _sntp: EspSntp<'static>,
+}
+
+/// A network setup failure: the code to show, and the cause to log.
+struct SetupError {
+    fault: Fault,
+    source: anyhow::Error,
+}
+
 fn run() -> anyhow::Result<()> {
     logging::init().context("setting log levels")?; // see section 6
-
-    // 1. Setup, in order. Any `?` error ends in fail_and_restart.
     let peripherals = Peripherals::take().context("taking peripherals")?;
     let sysloop = EspSystemEventLoop::take().context("taking the system event loop")?;
-    let mut wifi = wifi::connect(CONFIG.wifi_ssid, CONFIG.wifi_password, peripherals.modem, sysloop)
-        .context("connecting to WiFi")?;
-    let mac = wifi.get_mac(WifiDeviceId::Sta).context("reading the MAC address")?;
-    let device_id = DeviceId::from_mac(mac);
-    log::info!("device id: {device_id}");
-    let _sntp = sntp::sync(CONFIG.sntp_server, Duration::from_secs(30)).context("syncing time over SNTP")?;
-    let mqtt = mqtt::start(&device_id, CONFIG.mqtt_host, CONFIG.mqtt_password)
-        .context("starting the MQTT client")?;
-    mqtt::wait_connected(Duration::from_secs(30)).context("waiting for the MQTT broker")?;
 
-    // 2. Local hardware comes online.
+    // 1. The display comes first, so a later failure can show its code.
+    let tm1637 = /* TM1637 on GPIO5 (CLK) and GPIO6 (DIO) */;
+    let mut screen = block_on(display::Tm1637Screen::init(tm1637))
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
+        .context("initializing the display")?;
+    show_or_warn(&mut screen, Readout::NoReading); // dashes while the network comes up
+
+    // 2. The network, in order. A failure shows its code and restarts from here.
+    let mut network = match setup_network(peripherals.modem, sysloop) {
+        Ok(network) => network,
+        Err(SetupError { fault, source }) => {
+            show_or_warn(&mut screen, Readout::Fault(fault));
+            // Not `return Err(..)`: returning would drop `screen` and release its pins.
+            restart::fail_and_restart(&source.context(format!("setup failed with code {fault}")));
+        }
+    };
+
+    // 3. The sensor comes online.
     let adc1 = AdcDriver::new(peripherals.adc1).context("creating the ADC1 driver")?;
     let moisture_gauge = MoistureGauge::new("moisture-01");
     let mut sensor = MoistureSensor::new(
-        MOISTURE_01_CALIBRATION,
+        MOISTURE_SENSOR_01_CALIBRATION,
         peripherals.pins.gpio0,
         &adc1,
         Duration::from_millis(500),
     )
     .context("creating the moisture sensor")?;
-    let tm1637 = /* TM1637 on GPIO5 (CLK) and GPIO6 (DIO) */;
-    let mut screen = block_on(display::Tm1637Screen::init(tm1637))
-        .map_err(|e| anyhow::anyhow!("{e:?}"))
-        .context("initializing the display")?;
     let gauges: [&dyn Gauge; 1] = [&moisture_gauge];
 
-    // 3. Run forever. The tasks never end; if one does, it's a bug, so restart.
+    // 4. Run forever. The tasks never end; if one does, it's a bug, so restart.
     let tasks: [Pin<Box<dyn Future<Output = ()> + '_>>; 4] = [
         Box::pin(sensor.run(&moisture_gauge)),
         Box::pin(display::display_loop(&moisture_gauge, &mut screen)),
-        Box::pin(mqtt::publish_loop(&gauges, &mqtt)),
-        Box::pin(wifi::monitor(&mut wifi)),
+        Box::pin(mqtt::publish_loop(&gauges, &network.mqtt)),
+        Box::pin(wifi::monitor(&mut network.wifi)),
     ];
     let ((), index) = block_on(select_array(tasks));
     Err(anyhow::anyhow!("the {} task ended, but tasks run forever", TASK_NAMES[index]))
 }
+
+/// Connects WiFi, syncs the clock, and connects MQTT, in that order. Tags a
+/// failure with the `Fault` of the step that failed.
+fn setup_network(modem: Modem<'static>, sysloop: EspSystemEventLoop) -> Result<Network, SetupError> {
+    let (wifi, device_id) = connect_wifi(modem, sysloop)
+        .map_err(|source| SetupError { fault: Fault::Wifi, source })?;
+    let sntp = sntp::sync(CONFIG.sntp_server, Duration::from_secs(30))
+        .context("syncing time over SNTP")
+        .map_err(|source| SetupError { fault: Fault::Sntp, source })?;
+    let mqtt = connect_mqtt(&device_id)
+        .map_err(|source| SetupError { fault: Fault::Mqtt, source })?;
+    Ok(Network { wifi, mqtt, _sntp: sntp })
+}
+
+fn connect_wifi(
+    modem: Modem<'static>,
+    sysloop: EspSystemEventLoop,
+) -> anyhow::Result<(EspWifi<'static>, DeviceId)> {
+    let wifi = wifi::connect(CONFIG.wifi_ssid, CONFIG.wifi_password, modem, sysloop)
+        .context("connecting to WiFi")?;
+    let mac = wifi.get_mac(WifiDeviceId::Sta).context("reading the MAC address")?;
+    let device_id = DeviceId::from_mac(mac);
+    log::info!("device id: {device_id}");
+    Ok((wifi, device_id))
+}
+
+fn connect_mqtt(device_id: &DeviceId) -> anyhow::Result<MqttHandle> {
+    let mqtt = mqtt::start(device_id, CONFIG.mqtt_host, CONFIG.mqtt_password)
+        .context("starting the MQTT client")?;
+    mqtt::wait_connected(Duration::from_secs(30)).context("waiting for the MQTT broker")?;
+    Ok(mqtt)
+}
+
+/// Draws `readout` now, outside the display task. A failed write is only
+/// logged: it must not replace the error that setup is about to report.
+fn show_or_warn(screen: &mut display::Tm1637Screen, readout: Readout<i16>) {
+    if let Err(e) = block_on(screen.show(readout)) {
+        log::warn!("failed to write to display: {e:?}");
+    }
+}
 ```
 
 Here `Duration` is `embassy_time::Duration`.
+
+Notes on the error codes:
+
+- The display is initialized before the network, so it exists when a network
+  step fails. `block_on` runs one future to completion on the current
+  thread, and it works before the task array exists. Setup uses it for
+  `Tm1637Screen::init` and for each `show`, so setup stays ordinary
+  top-to-bottom code and needs no `async`.
+- `setup_network` groups the three network steps. Each step returns
+  `anyhow::Result`, and `map_err` wraps a failure in a `SetupError` that
+  carries the step's `Fault`. The closure `|source| SetupError { fault:
+  Fault::Wifi, source }` takes the `anyhow::Error` and builds the struct;
+  `source` alone is shorthand for `source: source`.
+- `SetupError` is a plain struct that doesn't implement `std::error::Error`.
+  It travels one level, from `setup_network` to the `match` in `run()`,
+  which takes it apart with the pattern `Err(SetupError { fault, source })`.
+  This follows the rule in section 6: the caller branches on which step
+  failed, so the failure has a type, not just a message.
+- On a failure, `run()` shows the code, adds one more context line to the
+  cause, and calls `fail_and_restart` itself. The log then names the same
+  code the display shows: `setup failed with code E-01`, with the chain below
+  it.
+- That arm calls `fail_and_restart` and doesn't `return Err(..)` for a
+  reason. Returning from `run()` drops `screen`, and dropping a `PinDriver`
+  resets its pin to disabled with no pull resistors (`esp-idf-hal` 0.47.0,
+  `gpio.rs:1164-1166` and `1393-1399`). CLK and DIO would be left floating
+  during the 10-second pause, and the code would stay readable only if the
+  display module's own pull-up resistors held the lines. `fail_and_restart`
+  never returns (`-> !`), so `screen` is never dropped and the pins stay
+  driven until the restart. The `!` type also fits the `match`: an arm that
+  never returns is accepted where a `Network` is expected.
+- The TM1637 keeps showing the last thing written to it, and nothing else
+  draws during the pause, so the code stays for the full 10 seconds.
+- Failures outside `setup_network` have no code. Before it, they're
+  `logging::init`, taking the peripherals or the event loop, and the display
+  itself. After it, they're the ADC and the sensor. None of them is a network
+  outage, and the log still reports them. Codes for them are deferred
+  (section 8, item 6).
+- `network.mqtt` and `network.wifi` are borrowed separately in the task
+  array, one shared and one `&mut`. The borrow checker tracks each field of
+  a struct on its own, so the two borrows don't conflict.
+- `peripherals.modem`, `peripherals.adc1`, and `peripherals.pins.gpio0` each
+  move out of `peripherals` at a different point. Rust allows moving fields
+  out of a struct one by one (a partial move), as the current `main.rs`
+  already does.
 
 Notes:
 
@@ -1252,7 +1495,7 @@ Notes:
   `run()`, and `main()` hands them to `fail_and_restart`. `anyhow`'s `?`
   converts `EspError` and any other type that implements `std::error::Error`
   automatically.
-- The calibration isn't a setup step: `MOISTURE_01_CALIBRATION` was already
+- The calibration isn't a setup step: `MOISTURE_SENSOR_01_CALIBRATION` was already
   checked when the firmware was built.
 - Each step adds a `.context(..)`. Without it, a failure logs only the inner
   error, such as `ESP_ERR_TIMEOUT`, with no hint of which step failed. With
@@ -1266,19 +1509,27 @@ Notes:
   if all of them stopped, `main()` would return and leave the MQTT thread
   running on its own.
 - The `((), index)` pattern matches the output: `()` because every task
-  returns `()`, then the index. `TASK_NAMES[index]` can't go out of bounds,
-  because both arrays have length 4 and the compiler checks that.
+  returns `()`, then the index. `TASK_NAMES[index]` stays in bounds only
+  while both arrays have the same length. `select_array` returns an index
+  below the task array's length, and the compiler checks each array against
+  its own type annotation, but nothing ties the two annotations together.
+  The names must also be in the same order as the tasks. Keep the two arrays
+  in step when adding a task.
 - `select_array` takes an array, and array elements must share one type. Each
   `async fn` returns its own anonymous future type, so the explicit
   `Pin<Box<dyn Future<Output = ()> + '_>>` annotation coerces all four to the
   same boxed trait object type.
-- The borrows coexist: `&mut sensor`, `&mut screen`, and `&mut wifi` are each
-  borrowed once, and `moisture_gauge` is only borrowed shared (by `sensor.run`,
+- The borrows coexist: `&mut sensor`, `&mut screen`, and `&mut network.wifi`
+  are each borrowed once, and `moisture_gauge` is only borrowed shared (by `sensor.run`,
   `display_loop`, and `gauges`).
 - The `Online` message at boot comes from the callback's first `Connected`, so
   setup doesn't publish anything itself.
-- `_sntp` keeps the SNTP client alive. A bare `_` would drop it immediately.
-- Sensors start only after SNTP has synced, so every `ts` is a real time.
+- `Network::_sntp` keeps the SNTP client alive for as long as `network`
+  lives. The leading underscore tells the compiler the field is unread on
+  purpose, so it doesn't warn.
+- Sensors start only after SNTP has synced, so every `ts` is a real time. The
+  display starts earlier, but until the tasks run it only shows dashes or an
+  error code, neither of which has a timestamp.
 - `sntp::sync(server: &str, timeout: Duration) -> anyhow::Result<EspSntp<'static>>`
   (in `src/sntp.rs`, new) creates `EspSntp::new(&conf)`, where `conf` is
   `SntpConf { servers: [server], ..Default::default() }`, and polls
@@ -1296,14 +1547,20 @@ Notes:
 
 ### Boot loops, documented
 
-Setup failures restart the board after a 10-second pause:
+Setup failures restart the board after a 10-second pause. During the pause,
+the display shows the code of the step that failed:
 
+- WiFi doesn't connect (wrong SSID or password, access point off): `E-01`
+  after the 5 attempts.
 - No internet, or an unreachable `sntp_server`: SNTP times out after 30 s,
-  so the board reboots about every 40 seconds.
+  the display shows `E-02`, and the board reboots about every 40 seconds.
 - Broker down or wrong credentials: `wait_connected` times out after 30 s,
-  same cycle. A restart doesn't fix wrong credentials, but the esp-mqtt C
-  library logs the reason ("bad username or password") on every cycle (and
-  later, status indication shows it).
+  the display shows `E-03`, same cycle. A restart doesn't fix wrong
+  credentials, but the code points to MQTT, and the esp-mqtt C library
+  logs the reason ("bad username or password") on every cycle.
+
+While setup runs, the display shows `----`. So a board stuck in a boot loop
+alternates between dashes and its code.
 
 ### `src/restart.rs` (new)
 
@@ -1414,7 +1671,9 @@ prints ESP-IDF's panic output and reboots right away, skipping
 | Where | Failure | What happens | Log |
 |---|---|---|---|
 | Setup (`run()`, before the tasks start) | Any | `?` up to `main()`, then `fail_and_restart` | `error`, from `fail_and_restart` |
-| Build time | Invalid `MOISTURE_01_CALIBRATION` | The firmware doesn't compile | Compiler error |
+| Setup, inside `setup_network` | WiFi, SNTP, or MQTT | The display shows `E-01`, `E-02`, or `E-03`, then `run()` calls `fail_and_restart` | `error`, with the code in the chain |
+| Setup, `show_or_warn` | Write to TM1637 | Setup carries on | `warn` |
+| Build time | Invalid `MOISTURE_SENSOR_01_CALIBRATION` | The firmware doesn't compile | Compiler error |
 | `run()`, after the tasks start | A task ends (a bug) | `select_array` returns, then `fail_and_restart` | `error`, naming the task |
 | `MoistureSensor::run` | ADC read or clock | Gauge set to `None`, retried next interval | `warn` on the first failure, `info` on recovery |
 | `display_loop` | Write to TM1637 | Retried on the next tick | `warn` on the first failure, `info` on recovery |
@@ -1422,7 +1681,7 @@ prints ESP-IDF's panic output and reboots right away, skipping
 | MQTT thread | Property setter fails | That publish skipped | `error` |
 | MQTT thread | Publish returns `Err` | Message stays in the outbox | `warn` |
 | Event callback | `Disconnected`, `Error` | The C client reconnects on its own | `warn`, `error` |
-| `wifi::monitor` | WiFi down | One reconnect, restart after 60 s | `warn` on the drop and if the reconnect call fails, `info` on recovery |
+| `wifi::monitor` | WiFi down | A reconnect attempt on every check, restart after 60 s | `warn` on the drop and if its first reconnect call fails, `debug` if a retry call fails, `info` on recovery |
 | Anywhere | Broken invariant | Panic, immediate reboot | ESP-IDF panic output |
 
 ### Logging
@@ -1595,8 +1854,8 @@ These are separate pieces of future work.
      channel (`select`).
 2. **Multi-gauge sensors.** Follow the sensor and gauge split from
    section 4 when the first such chip is added.
-3. **Full WiFi reconnection handling.** The WiFi monitor makes one reconnect
-   attempt and then restarts after 60 seconds. A fuller version would retry
+3. **Full WiFi reconnection handling.** The WiFi monitor retries every
+   5 seconds and restarts after 60 seconds. A fuller version would retry
    with backoff and keep the board running through long outages.
 4. **Choosing the screen at runtime.** `Draw` isn't dyn compatible (section
    4), so the display is picked at compile time. Picking it from
@@ -1622,11 +1881,21 @@ These are separate pieces of future work.
    bound. Another option is to key `Drawable` on a zero-sized capacity marker
    type that implements `NumericScreen`, instead of on the screen that owns
    the pins. Worth it once something besides `readout_for`
-   builds a `Readout`, such as a boot self-test showing `8888` or an error
-   code.
-6. **Status indication.** A buzzer sound in `fail_and_restart` (active or
-   passive buzzer still to decide; free and safe pins are GPIO1, GPIO3, GPIO4,
-   GPIO7, and GPIO10). LEDs or display error codes are undecided.
+   builds a `Readout::Number`, such as a boot self-test showing `8888`.
+   (`Readout::Fault` is built by hand already, but it carries a `Fault`, not
+   a number, so it has no range to enforce.)
+6. **More status indication.** Setup failures show a code on the display
+   (section 4, `fault.rs`). Still open:
+   - Codes for faults while the tasks run: the WiFi monitor's restart, a
+     task that ended, a failing sensor. The display is borrowed by
+     `display_loop` then, so the fault has to reach that loop, for example
+     through a shared `Cell<Option<Fault>>` that the loop checks before the
+     gauge. Whether a fault replaces the reading or alternates with it is
+     undecided.
+   - Codes for setup failures outside the network (the ADC, the sensor).
+   - A buzzer sound in `fail_and_restart` (active or passive buzzer still to
+     decide; free and safe pins are GPIO1, GPIO3, GPIO4, GPIO7, and GPIO10).
+   - LEDs.
 7. **Remaining `fak/v1` topics.** `meta/identity`, `meta/capabilities` (unit,
    minimum, maximum, and interval per reading; a `Value::kind()` method would
    help), `meta/metrics`, and `actionables/*`.
@@ -1654,6 +1923,13 @@ These are separate pieces of future work.
      `moisture-01`. Align the example.
    - `fak-supporting/config/mosquitto.conf` has no `acl_file`, so the ACL in
      `acl.md` isn't enforced yet.
+12. **A limit for MQTT outages after boot.** At boot, `wait_connected`
+    restarts the board if the broker doesn't accept it within 30 seconds.
+    After boot nothing watches the MQTT connection: if the broker goes away
+    or the credentials are revoked, esp-mqtt retries forever and the board
+    keeps running without publishing. A later version could apply the
+    `LinkMonitor` idea to MQTT (restart, or show a status, after a set time
+    disconnected).
 
 Already supported, no extra design needed: several moisture sensors on one
 board. Each gets its own gauge, sensor, and calibration. Adding one means

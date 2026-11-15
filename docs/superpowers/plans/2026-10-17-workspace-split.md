@@ -5,6 +5,10 @@
 > answers questions, and after each task it reviews the owner's diff. Claude
 > does not write the code. Steps use checkbox (`- [ ]`) syntax for tracking.
 
+**Status:** done on 2026-10-20. The checkboxes below weren't ticked while
+the work was done. The gate has since become `devenv test --no-tui` (see the
+note at the top of the spec).
+
 **Goal:** Turn the project into a Cargo workspace with a host-tested
 `fak-core` crate, so the existing tests run for the first time, locally and
 in CI.

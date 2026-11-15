@@ -7,7 +7,8 @@
 
 **Goal:** The board connects to WiFi, syncs its clock, and publishes its
 moisture reading to the `fak` MQTT broker every 60 seconds, with
-availability, a Last Will, typed errors, and a logging policy.
+availability, a Last Will, typed errors, and a logging policy. When WiFi,
+SNTP, or MQTT setup fails, the display shows an error code.
 
 **Architecture:** Pure logic (calibration, value types, topics, payloads,
 display and WiFi decisions) lives in `fak-core` and is built test-first on
@@ -42,10 +43,16 @@ dedicated `std::thread`, fed through a `std::sync::mpsc::sync_channel(8)`.
 - Log levels follow section 6 ("Levels"); log changes, not repetitions; never
   log `wifi_password` or `mqtt_password`.
 - Every `unsafe` block has a `// SAFETY:` comment naming what it relies on.
-- Gate after every task: `cargo fmt --check`,
-  `cargo clippy --workspace --all-targets --locked -- -D warnings`, and
-  `cargo test-core` pass. Pedantic is advice (workspace spec, section 7).
-  Then `/code-review` on the diff, then commit.
+- Gate after every task: `devenv test --no-tui` passes. It runs
+  `cargo fmt --check`, `cargo test-core`, clippy on the whole workspace with
+  `-D warnings`, and a release build (the cargo commands other than `fmt`
+  use `--locked`). CI runs the same
+  command. Pedantic is advice (workspace spec, section 7): run it with
+  `clippy-pedantic`. Then `/code-review` on the diff, then commit.
+- The firmware is a binary crate, so the gate rejects code nothing uses yet
+  (`dead_code`). Add an item in the task that first uses it. Where a task
+  must leave something unused for a later task, it says so and uses
+  `#[expect(dead_code, reason = "..")]`, which the later task removes.
 - Each new firmware module is added to `DEBUG_TARGETS` (from Task 6 on).
 
 ## Review Focus
@@ -71,6 +78,10 @@ board check in the task named.
 5. **`cfg.toml` copied from the example and not edited.** Expected: the build
    fails with a message naming the file, not a board that boot-loops.
    (Task 7, Step 5.)
+6. **A setup failure with nobody watching the log.** Expected: the display
+   shows the failed step's code (`E-01` WiFi, `E-02` SNTP, `E-03` MQTT) for
+   the whole 10-second pause, then `----` while setup runs again.
+   (Task 14, Step 8.)
 
 ---
 
@@ -106,7 +117,7 @@ follow a branch; registry versions are immutable and checksummed.
 - Modify: `fak-core/src/moisture.rs` (replace `percent_moisture_from_reading`)
 - Modify: `src/moisture_sensor.rs` (take a `Calibration`; drop the constants
   and the `ensure!`; fix the two comments from section 4)
-- Modify: `src/main.rs` (add `MOISTURE_01_CALIBRATION`)
+- Modify: `src/main.rs` (add `MOISTURE_SENSOR_01_CALIBRATION`)
 
 **Interfaces (section 4):**
 - Produces:
@@ -120,12 +131,12 @@ follow a branch; registry versions are immutable and checksummed.
 
 **Concepts first:** "parse, don't validate" (a value that can only exist if
 valid); private fields; `const fn` and computing a `const` at build time;
-writing `Display` and `Error` by hand; `u32::from` and `u8::try_from`;
+deriving `Display` and `Error` with `thiserror`; `u32::from` and `u8::try_from`;
 `# Errors` and `# Panics` doc sections; tests that return `Result` so `?`
 works inside them; doc examples as tests.
 
 **Questions:** Why can't `percent` divide by zero? What would happen at build
-time if `MOISTURE_01_CALIBRATION` used `new(780, 2309)`?
+time if `MOISTURE_SENSOR_01_CALIBRATION` used `new(780, 2309)`?
 
 - [x] **Step 1: Write the failing tests** in `fak-core/src/moisture.rs`.
   Tests return `Result<(), CalibrationError>` and build with
@@ -154,7 +165,7 @@ time if `MOISTURE_01_CALIBRATION` used `new(780, 2309)`?
   them).
 - [x] **Step 4:** `cargo test-core`. Expected: 9 unit tests and 1 doc-test
   pass.
-- [x] **Step 5: Firmware.** Add `MOISTURE_01_CALIBRATION` to `main.rs`, as a
+- [x] **Step 5: Firmware.** Add `MOISTURE_SENSOR_01_CALIBRATION` to `main.rs`, as a
   `match` with `panic!` (section 4). `MoistureSensor::new` takes it.
 - [ ] **Step 6: Prove the build-time check.** (skipped) Temporarily change it to
   `new(780, 2309)` and run `cargo build`. Expected: a compile error quoting
@@ -165,7 +176,7 @@ time if `MOISTURE_01_CALIBRATION` used `new(780, 2309)`?
 
 ---
 
-### Task 3: `Value`, `Reading`, `Gauge` (test-first)
+### Task 3: `Value`, `Reading`, `Gauge` (test-first, done)
 
 **Files:** Create `fak-core/src/gauge.rs`; modify `fak-core/src/lib.rs`.
 
@@ -180,17 +191,17 @@ time if `MOISTURE_01_CALIBRATION` used `new(780, 2309)`?
 `.into()`; traits and `&dyn Trait` (trait objects); why the trait has no
 associated type (E0191, section 4).
 
-- [ ] **Step 1: Failing tests:** `Value::from(42_u8) == Value::Integer(42)`,
+- [x] **Step 1: Failing tests:** `Value::from(42_u8) == Value::Integer(42)`,
   `Value::from(255_u8) == Value::Integer(255)`,
   `Value::from(true) == Value::Bool(true)`.
-- [ ] **Step 2:** `cargo test-core`: fails to compile.
-- [ ] **Step 3: Implement** the types, impls, and trait.
-- [ ] **Step 4:** `cargo test-core`: passes.
-- [ ] **Step 5:** Gate, review, commit: `feat(core): add Value, Reading and Gauge`.
+- [x] **Step 2:** `cargo test-core`: fails to compile.
+- [x] **Step 3: Implement** the types, impls, and trait.
+- [x] **Step 4:** `cargo test-core`: passes.
+- [x] **Step 5:** Gate, review, commit: `feat(core): add Value, Reading and Gauge`.
 
 ---
 
-### Task 4: `readout::readout_for` (test-first)
+### Task 4: `readout::readout_for` (test-first, done)
 
 **Files:** Create `fak-core/src/readout.rs`; modify `fak-core/src/lib.rs`.
 
@@ -218,7 +229,7 @@ range, and how does its sign say which side? Why can't the test screen
 `FixtureTenToTwenty` use `Number = i16` and still cover every arm? What can still go
 wrong with `Readout::<i16>::Number(12345)`, and what stops it today?
 
-- [ ] **Step 1: Failing tests** (any `ts`). Two test-only screens in the test
+- [x] **Step 1: Failing tests** (any `ts`). Two test-only screens in the test
   module: `FixtureFourDigits` (`Number = i16`, `DRAWABLE_RANGE = FOUR_DIGITS`) and
   `FixtureTenToTwenty` (`Number = u8`, `DRAWABLE_RANGE = 10..=20`).
 
@@ -243,11 +254,11 @@ wrong with `Readout::<i16>::Number(12345)`, and what stops it today?
   | `below_number_type_is_too_low` | `FixtureTenToTwenty` | `Integer(-5)` | `TooLow` |
   | `above_number_type_is_too_high` | `FixtureTenToTwenty` | `Integer(300)` | `TooHigh` |
 
-- [ ] **Step 2:** `cargo test-core`: fails to compile.
-- [ ] **Step 3: Implement** `Readout`, `NumericScreen`, `FOUR_DIGITS`, and
+- [x] **Step 2:** `cargo test-core`: fails to compile.
+- [x] **Step 3: Implement** `Readout`, `NumericScreen`, `FOUR_DIGITS`, and
   `readout_for`, and register the module in `lib.rs`.
-- [ ] **Step 4:** `cargo test-core`: passes.
-- [ ] **Step 5:** Gate, review, commit: `feat(core): add display readout rule`.
+- [x] **Step 4:** `cargo test-core`: passes.
+- [x] **Step 5:** Gate, review, commit: `feat(core): add display readout rule`.
 
 ---
 
@@ -268,8 +279,7 @@ wrong with `Readout::<i16>::Number(12345)`, and what stops it today?
 - Produces:
   - `pub struct MoistureGauge { reading_id: &'static str, latest: Cell<Option<Sample>> }`,
     `MoistureGauge::new(reading_id: &'static str) -> Self`, private
-    `store(&self, sample: Option<Sample>)`, `millivolts(&self) -> Option<u16>`,
-    and `impl Gauge for MoistureGauge`.
+    `store(&self, sample: Option<Sample>)`, and `impl Gauge for MoistureGauge`.
   - `MoistureSensor::new(calibration, pin, adc, refresh_interval: embassy_time::Duration) -> anyhow::Result<Self>`
   - `pub async fn MoistureSensor::run(&mut self, gauge: &MoistureGauge)`;
     private `fn sample(&mut self) -> anyhow::Result<Sample>`.
@@ -296,8 +306,8 @@ constructor that does the setup (`Tm1637Screen::init`) so an uninitialized
 screen can't exist.
 
 **Questions:** Why does `run` take `&mut self` but `display_loop` only
-`&dyn Gauge`? What does `select_array` return, and why can `TASK_NAMES[index]`
-not go out of bounds?
+`&dyn Gauge`? What does `select_array` return? What keeps `TASK_NAMES[index]`
+in bounds, and which part of that does the compiler not check?
 
 - [ ] **Step 1: `Sample` and `MoistureGauge`.** `latest()` maps a sample to
   `Reading { value: Value::from(percent), ts }`.
@@ -309,8 +319,11 @@ not go out of bounds?
   `failing: bool`, `warn` with `{e:#}` on the first error, `info` on
   recovery, `debug` on every `Ok`) and a 500 ms refresh interval.
 - [ ] **Step 4: `display.rs`.** `Draw`, `Tm1637Screen` (`init`, both impls),
-  and `display_loop`. Every 500 ms,
-  `screen.show(readout_for::<S>(gauge.latest())).await`. `show` draws per the
+  and `display_loop`. Every 500 ms it computes
+  `readout_for::<S>(gauge.latest())` and calls `screen.show(readout).await`
+  only when the readout differs from a local
+  `last_drawn: Option<Readout<S::Number>>` (`None` at start and after a
+  failed write, `Some(readout)` after a successful one). `show` draws per the
   table in section 4: `Number(n)` with `options().r_i16_4(n)` (correct for
   zero in 0.5.3), and each word as the full 4-character string
   (`"----"`, `"HIGH"`, `"  LO"`, `"  On"`, `" OFF"`) with
@@ -372,8 +385,9 @@ less, never more?
 
 ### Task 7: Build-time configuration (`toml-cfg`)
 
-**Files:** Modify `Cargo.toml`, `build.rs`, `src/main.rs`; create
-`cfg.toml.example`; create your own `cfg.toml` (already gitignored).
+**Files:** Modify `Cargo.toml`, `build.rs`, `src/main.rs`,
+`.github/workflows/rust_ci.yml`; create `cfg.toml.example`; create your own
+`cfg.toml` (already gitignored).
 
 **Interfaces (section 5, "Configuration"):** `Config` with `wifi_ssid`,
 `wifi_password`, `mqtt_host`, `mqtt_password` (all `#[default("")]`) and
@@ -392,11 +406,21 @@ declared twice; `panic!` in a build script fails the build.
   equals its placeholder, or if any required value is empty. Keep
   `embuild::espidf::sysenv::output()`.
 - [ ] **Step 4:** `main.rs` declares `Config`; log `CONFIG.mqtt_host` once at
-  `info` to see it works (never the passwords).
+  `info` to see it works (never the passwords). The other fields have no
+  reader until Tasks 9 to 12. No attribute is needed for that: with
+  `toml-cfg`, unread `Config` fields don't trigger `dead_code` (checked on a
+  host mock with 0.1.3 and 0.2.0).
 - [ ] **Step 5: Prove each failure** (Review Focus 5): build without
   `cfg.toml`, with the example copied unchanged, and with one value set to
-  `""`. Expected: three build errors, each naming the problem.
-- [ ] **Step 6:** Gate, review, commit: `feat: add build-time configuration`.
+  `""`. Expected: three build errors, each naming the problem. Also check
+  that editing `cfg.toml` alone triggers a rebuild; if it doesn't, `build.rs`
+  needs `println!("cargo:rerun-if-changed=cfg.toml")`.
+- [ ] **Step 6: CI.** `cfg.toml` is gitignored, so a clean checkout has none
+  and the gate's clippy and build would fail. In
+  `.github/workflows/rust_ci.yml`, add a step before `Run checks` that writes
+  a `cfg.toml` with made-up values (not the example's placeholders).
+- [ ] **Step 7:** Gate, review, commit, push: `feat: add build-time configuration`.
+  Expected on GitHub: the job is green.
 
 ---
 
@@ -478,7 +502,7 @@ comment; `Peripherals::take` and moving `modem` out.
 
 **Interfaces (section 2):**
 - Produces: `pub const DOWN_LIMIT: core::time::Duration` (60 s);
-  `#[must_use] pub enum Action { Wait, Reconnect, Recovered, Restart }`;
+  `#[must_use] pub enum Action { Wait, Reconnect, Retry, Recovered, Restart }`;
   `#[derive(Debug, Default)] pub struct LinkMonitor`;
   `pub fn step(&mut self, is_up: bool, now: core::time::Duration) -> Action`;
   `pub async fn wifi::monitor(wifi: &mut EspWifi<'static>)`.
@@ -496,22 +520,30 @@ a type; `Default` derive.
   |---|---|
   | `up_without_a_drop_waits` | `step(true, s(0))` is `Wait` |
   | `first_down_check_reconnects` | `step(false, s(10))` is `Reconnect` |
-  | `down_just_under_the_limit_waits` | `step(false, s(10))`, then `step(false, s(10) + DOWN_LIMIT - Duration::from_millis(1))` is `Wait` |
+  | `second_down_check_retries` | `step(false, s(10))`, then `step(false, s(15))` is `Retry` |
+  | `down_just_under_the_limit_retries` | `step(false, s(10))`, then `step(false, s(10) + DOWN_LIMIT - Duration::from_millis(1))` is `Retry` |
   | `down_at_the_limit_restarts` | `step(false, s(10))`, then `step(false, s(10) + DOWN_LIMIT)` is `Restart` |
   | `recovery_is_reported_once` | `step(false, s(10))`, `step(true, s(20))` is `Recovered`, `step(true, s(25))` is `Wait` |
-  | `drop_after_recovery_reconnects_and_restarts_the_timer` | down at 10, up at 20, `step(false, s(30))` is `Reconnect`, `step(false, s(30) + DOWN_LIMIT - Duration::from_millis(1))` is `Wait` |
-  | `clock_going_backwards_does_not_panic` | `step(false, s(10))`, then `step(false, s(5))` is `Wait` |
+  | `drop_after_recovery_reconnects_and_restarts_the_timer` | down at 10, up at 20, `step(false, s(30))` is `Reconnect`, `step(false, s(30) + DOWN_LIMIT - Duration::from_millis(1))` is `Retry` |
+  | `clock_going_backwards_does_not_panic` | `step(false, s(10))`, then `step(false, s(5))` is `Retry` |
 
 - [ ] **Step 2:** `cargo test-core`: fails to compile.
 - [ ] **Step 3: Implement `step`** from the table in section 2.
 - [ ] **Step 4:** `cargo test-core`: passes.
 - [ ] **Step 5: `wifi::monitor`.** Every 5 s: `is_up()` (an `Err` counts as
-  down), `now` from `embassy_time::Instant`, `step`, then act (section 2). A
-  failing `wifi.connect()` is logged at `warn`.
-- [ ] **Step 6:** Add it as the third task.
+  down), `now` from `embassy_time::Instant`, `step`, then act (section 2).
+  `Reconnect` and `Retry` both call `wifi.connect()`, unless
+  `wifi.is_connected()` is `Ok(true)` (link up, still waiting for an IP
+  address); a failing call is logged at `warn` for `Reconnect` and at
+  `debug` for `Retry`.
+- [ ] **Step 6:** Add it as the third task, with its name third in
+  `TASK_NAMES`.
 - [ ] **Step 7: Board** (Review Focus 3). Switch the access point off for
   about 20 s: one `warn`, one `info`, no restart. Then for over 60 s: a
   restart with "WiFi" in the reason. Display keeps updating throughout.
+  Note what `wifi.connect()` returns on the retries (the `debug` lines), and
+  whether the WiFi library prints its own line on each retry. Record both in
+  the spec's section 2.
 - [ ] **Step 8:** Gate, review, commit: `feat: monitor WiFi and restart after a long drop`.
 
 ---
@@ -549,7 +581,8 @@ Mosquitto password file, per `fak-supporting`'s `README.md` (section 3,
 
 **Interfaces (section 3):**
 - Produces: `pub struct MqttHandle { requests_tx: SyncSender<PublishRequest> }`;
-  private `enum PublishRequest { Reading { reading_id: &'static str, payload: String }, Online }`;
+  private `enum PublishRequest { Online }` (the `Reading` variant arrives in
+  Task 13, with the code that builds it);
   `pub fn start(device_id: &DeviceId, host: &str, password: &str) -> anyhow::Result<MqttHandle>`;
   `pub fn wait_connected(timeout: embassy_time::Duration) -> anyhow::Result<()>`;
   module-level `static CONNECTED: Signal<CriticalSectionRawMutex, ()>`;
@@ -573,13 +606,18 @@ it.
 - [ ] **Step 2:** The client configuration table from section 3.
 - [ ] **Step 3:** The event callback (three things only, section 3).
 - [ ] **Step 4:** `start`: channel, `new_cb`, thread with
-  `stack_size(6144)`.
-- [ ] **Step 5:** `mqtt_thread` handling `Online` only: `online_props`
-  leaked once, setter before every publish (with its SAFETY comment),
-  availability topic built once. `Reading` is `todo!()` until Task 13.
+  `stack_size(6144)`. Nothing reads `MqttHandle::requests_tx` until
+  `send_reading` exists, so put
+  `#[expect(dead_code, reason = "send_reading uses it in Task 13")]` on the
+  field.
+- [ ] **Step 5:** `mqtt_thread` handling `Online`, the only request so far:
+  `online_props` leaked once, setter before every publish (with its SAFETY
+  comment), availability topic built once.
 - [ ] **Step 6:** `wait_connected`, with the fixed-message `map_err`.
 - [ ] **Step 7:** In `run()`, after SNTP: `mqtt::start` and
-  `wait_connected(30 s)`, each with `.context`.
+  `wait_connected(30 s)`, each with `.context`. Bind the handle as `_mqtt`
+  until Task 13 uses it (a plain `mqtt` is an unused variable, and a bare
+  `_` would drop the handle at once).
 - [ ] **Step 8: Board.** With `mosquitto_sub -v -t 'fak/v1/devices/#'` (and
   the broker credentials) on your machine: expected a retained
   `{"state":"online","ts":...}`. Power the board off: after about
@@ -601,20 +639,25 @@ it.
 - Produces: `fn MqttHandle::send_reading(&self, reading_id: &'static str, payload: String)`
   (drop and `warn` when full); `pub async fn publish_loop(gauges: &[&dyn Gauge], mqtt: &MqttHandle)`;
   `reading_props` with `message_expiry_interval: 180`.
-- `TASK_NAMES` becomes `[&str; 4]`, adding `"MQTT publish"`.
+- `PublishRequest` gains `Reading { reading_id: &'static str, payload: String }`.
+- `TASK_NAMES` becomes `[&str; 4]`, with `"MQTT publish"` inserted third,
+  before `"WiFi monitor"`, so the order matches section 5.
 
 **Concepts first:** slices of trait objects (`&[&dyn Gauge]`); `Ticker`
 versus a new `Timer` each loop; why the first reading comes 60 s after start
 (section 3).
 
-- [ ] **Step 1:** `send_reading`.
+- [ ] **Step 1:** The `Reading` variant and `send_reading`. Remove the
+  `#[expect(dead_code)]` from `requests_tx` and rename `_mqtt` to `mqtt`.
 - [ ] **Step 2:** The `Reading` arm of `mqtt_thread`: set `reading_props`
   (SAFETY comment), publish QoS 1, retained, to `reading_topic(..)`. Setter
   error: log at `error` and skip. Publish error: log at `warn`.
 - [ ] **Step 3:** `publish_loop`: one `Ticker::every(60 s)`; skip gauges with
   `None`; `payload::reading(&reading)`.
 - [ ] **Step 4:** `let gauges: [&dyn Gauge; 1] = [&moisture_gauge];` and the
-  fourth task. The boot sequence now matches section 5.
+  publish task, inserted third in the task array, the same position as its
+  name in `TASK_NAMES`. The boot sequence now matches section 5 except for
+  the error codes (display first, `setup_network`), which arrive in Task 14.
 - [ ] **Step 5: Board.** Expected: about 60 s after boot, a retained message
   on `.../readings/moisture-01` like `{"value":43,"ts":...}`, then one per
   minute.
@@ -628,3 +671,81 @@ versus a new `Timer` each loop; why the first reading comes 60 s after start
 - [ ] **Step 8:** Update section 7 of the spec with what Tasks 12 and 13
   measured (items 1 to 4), then gate, review, commit:
   `feat: publish moisture readings over MQTT`.
+
+---
+
+### Task 14: Error codes on the display for setup failures
+
+**Files:** Create `fak-core/src/fault.rs`; modify `fak-core/src/lib.rs`,
+`fak-core/src/readout.rs`, `src/display.rs`, `src/main.rs`.
+
+**Interfaces (section 4, `fault.rs`, and section 5, "Boot sequence"):**
+- Produces in `fak-core`:
+  `#[derive(Debug, Clone, Copy, PartialEq, Eq)] pub enum Fault { Wifi, Sntp, Mqtt }`,
+  `#[must_use] pub const fn Fault::code(self) -> u8` (1, 2, 3),
+  `impl fmt::Display for Fault` (`E-01`, `E-02`, `E-03`), and a new variant
+  `Readout::Fault(Fault)`.
+- Produces in `main.rs`: `struct Network { wifi, mqtt, _sntp }`,
+  `struct SetupError { fault: Fault, source: anyhow::Error }`,
+  `fn setup_network(modem, sysloop) -> Result<Network, SetupError>`,
+  `fn connect_wifi(..) -> anyhow::Result<(EspWifi<'static>, DeviceId)>`,
+  `fn connect_mqtt(&DeviceId) -> anyhow::Result<MqttHandle>`, and
+  `fn show_or_warn(screen: &mut display::Tm1637Screen, readout: Readout<i16>)`.
+- Consumes: everything `run()` set up in Tasks 6, 9, 11, 12, and 13.
+
+**Concepts first:** an enum as the list of valid codes; `match` without a
+wildcard arm; implementing `Display` by hand with `write!` and `{:02}`;
+`to_string()` comes free with `Display`; adding a variant and letting the
+compiler list every `match` to fix (E0004); `map_err` with a closure that
+builds a struct, and field shorthand; destructuring a struct in a `match`
+pattern; `block_on` outside the task array; borrowing two fields of one
+struct separately; why a failed display write is logged and not propagated.
+
+**Questions:** Why does `SetupError` not need to implement
+`std::error::Error`? What would the display show for a fault with code 100,
+and what stops that today? Why does the failure arm in `run()` call
+`fail_and_restart` and not `return Err(..)`, and what would happen to the
+display's pins if it returned?
+
+- [ ] **Step 1: Failing tests** in `fak-core/src/fault.rs`:
+
+  | Test | Assertion |
+  |---|---|
+  | `wifi_is_code_one` | `Fault::Wifi.code() == 1` |
+  | `sntp_is_code_two` | `Fault::Sntp.code() == 2` |
+  | `mqtt_is_code_three` | `Fault::Mqtt.code() == 3` |
+  | `wifi_displays_as_e_01` | `Fault::Wifi.to_string() == "E-01"` |
+  | `sntp_displays_as_e_02` | `Fault::Sntp.to_string() == "E-02"` |
+  | `mqtt_displays_as_e_03` | `Fault::Mqtt.to_string() == "E-03"` |
+
+- [ ] **Step 2:** `cargo test-core`: fails to compile.
+- [ ] **Step 3: Implement** `Fault`, `code`, and `Display`; register the
+  module in `lib.rs`. `cargo test-core`: passes.
+- [ ] **Step 4: `Readout::Fault(Fault)`.** Add the variant and update the
+  doc comment on `Readout` (section 4). `cargo test-core` still passes:
+  `readout_for` matches on `Value`, so it doesn't change. Then
+  `cargo build`. Expected: E0004 in `Tm1637Screen::show`, naming the missing
+  `Fault(_)` pattern.
+- [ ] **Step 5: Draw it.** The new arm of `show` draws
+  `options().str(&fault.to_string())`. `cargo build` passes.
+- [ ] **Step 6: Restructure `run()`** to the boot sequence in section 5:
+  display first, then `show_or_warn(&mut screen, Readout::NoReading)`, then
+  `setup_network` with its `match` (the failure arm shows the code and calls
+  `fail_and_restart` itself, so `screen` isn't dropped), then the sensor,
+  then the tasks. Move
+  the WiFi, SNTP, and MQTT steps into `connect_wifi`, `setup_network`, and
+  `connect_mqtt`, keeping every `.context(..)` message.
+- [ ] **Step 7: Board, normal boot.** Expected: `----` while the network
+  comes up, then the percentage. Readings still arrive on the broker.
+- [ ] **Step 8: Board, each code.** One at a time, restoring `cfg.toml`
+  after each:
+  - Wrong `wifi_ssid`: `E-01`, steady and readable for the whole 10 s, then
+    a restart.
+  - `sntp_server` set to an IP that doesn't answer: `E-02`.
+  - Wrong `mqtt_password`: `E-03`.
+
+  In each case the log's `error` chain starts with
+  `setup failed with code E-0x`, and the display alternates between `----`
+  and the code across restarts.
+- [ ] **Step 9:** Gate, review, commit:
+  `feat: show an error code on the display when setup fails`.

@@ -6,6 +6,18 @@ reviews. Implementation plan:
 [MQTT integration](2026-10-15-mqtt-integration-design.md), which assumes this
 layout.
 
+Implemented on 2026-10-20. The text below is kept as it was approved. Four
+things changed afterwards:
+
+- CI no longer has a cargo matrix (section 5). The workflow runs
+  `devenv test --no-tui`, which runs `fmt`, `test-core`, clippy, and a
+  release build, all with `--locked`. That command is the gate.
+- There is no `rust-toolchain.toml` (section 2). The nightly toolchain comes
+  from `devenv.nix`.
+- `[patch.crates-io]` is gone (section 2). The ESP-IDF crates come from
+  crates.io.
+- `fak-core` has one dependency, `thiserror` (section 2 says none).
+
 This document describes how `lector-humedad` becomes a Cargo workspace with a
 second crate, `fak-core`, that holds pure logic and runs its tests on the
 development machine.
@@ -197,7 +209,8 @@ The MQTT spec places these in `fak-core` when they're written:
 | `fak_core::topics` | `DeviceId`, `availability_topic`, `reading_topic` |
 | `fak_core::payload` | JSON formatting for readings and availability |
 | `fak_core::readout` | Which number the display shows for a reading |
-| `fak_core::link` | The WiFi monitor's decision: wait, reconnect, recovered, or restart |
+| `fak_core::fault` | The error codes the display shows for setup failures |
+| `fak_core::link` | The WiFi monitor's decision: wait, reconnect, retry, recovered, or restart |
 
 The firmware implements `fak_core::gauge::Gauge` for its own `MoistureGauge`.
 Rust allows that because the type is local to the firmware crate.
