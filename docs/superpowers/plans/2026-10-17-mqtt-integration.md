@@ -184,7 +184,7 @@ time if `MOISTURE_SENSOR_01_CALIBRATION` used `new(780, 2309)`?
 - Produces: `pub enum Value { Integer(i32), Bool(bool) }`,
   `impl From<u8> for Value`, `impl From<bool> for Value`,
   `pub struct Reading { pub value: Value, pub ts: u64 }`, and
-  `pub trait Gauge { fn reading_id(&self) -> &'static str; fn latest(&self) -> Option<Reading>; }`.
+  `pub trait Gauge { fn name(&self) -> &'static str; fn latest(&self) -> Option<Reading>; }`.
   Both types derive `Debug, Clone, Copy, PartialEq, Eq`.
 
 **Concepts first:** closed enums and exhaustive `match`; `From` and
@@ -267,7 +267,7 @@ wrong with `Readout::<i16>::Number(12345)`, and what stops it today?
 **Files:**
 - Modify: `src/moisture_sensor.rs` (`Sample`, `MoistureGauge`,
   `MoistureSensor::run`, `sample`)
-- Create: `src/display.rs` (`Tm1637Display`, `Draw`, `Tm1637Screen`,
+- Create: `src/display.rs` (`TM1637Display`, `Draw`, `TM1637Screen`,
   `display_loop`)
 - Modify: `src/main.rs` (task array, `TASK_NAMES`, remove `sensor_display`
   and `TM1637DisplayT`)
@@ -277,16 +277,16 @@ wrong with `Readout::<i16>::Number(12345)`, and what stops it today?
 - Consumes: `Calibration` (Task 2), `Gauge`, `Reading`, `Value` (Task 3),
   `Readout`, `NumericScreen`, `FOUR_DIGITS`, `readout_for` (Task 4).
 - Produces:
-  - `pub struct MoistureGauge { reading_id: &'static str, latest: Cell<Option<Sample>> }`,
-    `MoistureGauge::new(reading_id: &'static str) -> Self`, private
+  - `pub struct MoistureGauge { name: &'static str, latest: Cell<Option<Sample>> }`,
+    `MoistureGauge::new(name: &'static str) -> Self`, private
     `store(&self, sample: Option<Sample>)`, and `impl Gauge for MoistureGauge`.
   - `MoistureSensor::new(calibration, pin, adc, refresh_interval: embassy_time::Duration) -> anyhow::Result<Self>`
   - `pub async fn MoistureSensor::run(&mut self, gauge: &MoistureGauge)`;
     private `fn sample(&mut self) -> anyhow::Result<Sample>`.
-  - `pub type Tm1637Display` (section 4).
+  - `pub type TM1637Display` (section 4).
   - `pub trait Draw: NumericScreen { type Error: std::fmt::Debug; async fn show(&mut self, readout: Readout<Self::Number>) -> Result<(), Self::Error>; }`
-  - `pub struct Tm1637Screen(Tm1637Display)` with
-    `pub async fn init(display: Tm1637Display) -> Result<Self, tm1637_embedded_hal::Error<GpioError>>`,
+  - `pub struct TM1637Screen(TM1637Display)` with
+    `pub async fn init(display: TM1637Display) -> Result<Self, tm1637_embedded_hal::Error<GpioError>>`,
     `impl NumericScreen` (`Number = i16`, `DRAWABLE_RANGE = FOUR_DIGITS`), and
     `impl Draw`.
   - `pub async fn display_loop<S: Draw>(gauge: &dyn Gauge, screen: &mut S)`.
@@ -302,24 +302,24 @@ the sensor calls `store`; implementing a foreign trait for a local type;
 futures; `join_array` versus `select_array` (section 5); a supertrait
 (`Draw: NumericScreen`); `async fn` in a trait and why it isn't dyn
 compatible; the orphan rule and the newtype around the driver; a
-constructor that does the setup (`Tm1637Screen::init`) so an uninitialized
+constructor that does the setup (`TM1637Screen::init`) so an uninitialized
 screen can't exist.
 
 **Questions:** Why does `run` take `&mut self` but `display_loop` only
 `&dyn Gauge`? What does `select_array` return? What keeps `TASK_NAMES[index]`
 in bounds, and which part of that does the compiler not check?
 
-- [ ] **Step 1: `Sample` and `MoistureGauge`.** `latest()` maps a sample to
+- [x] **Step 1: `Sample` and `MoistureGauge`.** `latest()` maps a sample to
   `Reading { value: Value::from(percent), ts }`.
-- [ ] **Step 2: `sample()`.** Averages 30 `read()` calls in a `u32`, computes
+- [x] **Step 2: `sample()`.** Averages 30 `read()` calls in a `u32`, computes
   the percent with the calibration, and stamps `ts` from
   `SystemTime::now().duration_since(UNIX_EPOCH)?.as_secs()`. Until SNTP
   (Task 11), `ts` counts from 1970 at boot; that's expected for now.
-- [ ] **Step 3: `run()`** with the change-only logging from section 4 (local
+- [x] **Step 3: `run()`** with the change-only logging from section 4 (local
   `failing: bool`, `warn` with `{e:#}` on the first error, `info` on
-  recovery, `debug` on every `Ok`) and a 500 ms refresh interval.
-- [ ] **Step 4: `display.rs`.** `Draw`, `Tm1637Screen` (`init`, both impls),
-  and `display_loop`. Every 500 ms it computes
+  recovery, `debug` on every `Ok`) and a 100 ms refresh interval.
+- [x] **Step 4: `display.rs`.** `Draw`, `TM1637Screen` (`init`, both impls),
+  and `display_loop`. Every 100 ms it computes
   `readout_for::<S>(gauge.latest())` and calls `screen.show(readout).await`
   only when the readout differs from a local
   `last_drawn: Option<Readout<S::Number>>` (`None` at start and after a
@@ -329,19 +329,24 @@ in bounds, and which part of that does the compiler not check?
   (`"----"`, `"HIGH"`, `"  LO"`, `"  On"`, `" OFF"`) with
   `options().str(..)`, because `Align<4>` doesn't pad. Write failures use the
   same change-only logging.
-- [ ] **Step 5: `main.rs`.** Build the display with
-  `block_on(display::Tm1637Screen::init(tm1637))` (it replaces today's
+- [x] **Step 5: `main.rs`.** Build the display with
+  `block_on(display::TM1637Screen::init(tm1637))` (it replaces today's
   separate `init()` call), and pass `&mut screen` to `display_loop`. Build
   the 2-task array with explicit type `[Pin<Box<dyn Future<Output = ()> + '_>>; 2]`, then
   `let ((), index) = block_on(select_array(tasks));` and return an error
   naming `TASK_NAMES[index]`. Until Task 6, `main` returns that error.
-- [ ] **Step 6: Board.** Percentage shows as before; dashes for the first
-  500 ms at most.
-- [ ] **Step 7: Prove `select_array`.** Temporarily make `display_loop` return
+- [x] **Step 6: Board.** Percentage shows as before; dashes for the first
+  100 ms at most.
+- [x] **Step 7: Prove `select_array`.** Temporarily make `display_loop` return
   after 10 iterations. Expected: an error naming the `display` task. Revert.
-- [ ] **Step 8: Review Focus 4.** Unplug AOUT while running. Note what the
+- [x] **Step 8: Review Focus 4.** Unplug AOUT while running. Note what the
   display shows. Expected per today's design: a high percentage, not dashes.
-- [ ] **Step 9:** Gate, review, commit:
+  Observed 2026-11-16: with AOUT unplugged, readings oscillate between 0 and
+  ~2000 mV with a period of ~0.7 s. The displayed value swings between
+  ~20 % and 100 %, not a steady 100 % as Review Focus 4 expected. Cause not
+  determined. A future "sensor missing" check can't rely on the floating
+  pin reading low; it likely needs a pull-down on GPIO0 first.
+- [x] **Step 9:** Gate, review, commit:
   `feat: split moisture sensor and gauge, run tasks with select_array`.
 
 ---
@@ -433,7 +438,7 @@ declared twice; `panic!` in a build script fails the build.
 - Produces: `pub struct DeviceId(String)` (derive `Debug, Clone, PartialEq, Eq`)
   with `from_mac(mac: [u8; 6]) -> Self`, `as_str(&self) -> &str`, and
   `Display`; `availability_topic(device_id: &DeviceId) -> String`;
-  `reading_topic(device_id: &DeviceId, reading_id: &str) -> String`;
+  `reading_topic(device_id: &DeviceId, name: &str) -> String`;
   `payload::OFFLINE: &str`; `payload::online(ts: u64) -> String`;
   `payload::reading(reading: &Reading) -> String`.
 
@@ -636,10 +641,10 @@ it.
 **Files:** Modify `src/mqtt.rs`, `src/main.rs`.
 
 **Interfaces (section 3):**
-- Produces: `fn MqttHandle::send_reading(&self, reading_id: &'static str, payload: String)`
+- Produces: `fn MqttHandle::send_reading(&self, name: &'static str, payload: String)`
   (drop and `warn` when full); `pub async fn publish_loop(gauges: &[&dyn Gauge], mqtt: &MqttHandle)`;
   `reading_props` with `message_expiry_interval: 180`.
-- `PublishRequest` gains `Reading { reading_id: &'static str, payload: String }`.
+- `PublishRequest` gains `Reading { name: &'static str, payload: String }`.
 - `TASK_NAMES` becomes `[&str; 4]`, with `"MQTT publish"` inserted third,
   before `"WiFi monitor"`, so the order matches section 5.
 
@@ -690,7 +695,7 @@ versus a new `Timer` each loop; why the first reading comes 60 s after start
   `fn setup_network(modem, sysloop) -> Result<Network, SetupError>`,
   `fn connect_wifi(..) -> anyhow::Result<(EspWifi<'static>, DeviceId)>`,
   `fn connect_mqtt(&DeviceId) -> anyhow::Result<MqttHandle>`, and
-  `fn show_or_warn(screen: &mut display::Tm1637Screen, readout: Readout<i16>)`.
+  `fn show_or_warn(screen: &mut display::TM1637Screen, readout: Readout<i16>)`.
 - Consumes: everything `run()` set up in Tasks 6, 9, 11, 12, and 13.
 
 **Concepts first:** an enum as the list of valid codes; `match` without a
@@ -724,7 +729,7 @@ display's pins if it returned?
 - [ ] **Step 4: `Readout::Fault(Fault)`.** Add the variant and update the
   doc comment on `Readout` (section 4). `cargo test-core` still passes:
   `readout_for` matches on `Value`, so it doesn't change. Then
-  `cargo build`. Expected: E0004 in `Tm1637Screen::show`, naming the missing
+  `cargo build`. Expected: E0004 in `TM1637Screen::show`, naming the missing
   `Fault(_)` pattern.
 - [ ] **Step 5: Draw it.** The new arm of `show` draws
   `options().str(&fault.to_string())`. `cargo build` passes.

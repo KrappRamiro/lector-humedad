@@ -37,6 +37,7 @@ esp-idf-svc = { version = "0.53", features = [
 embassy-time = { version = "0.5", features = ["generic-queue-8"] }
 anyhow = "1.0.104"
 tm1637-embedded-hal = "0.5.3"
+embassy-futures = "0.1.2"
 
 [build-dependencies]
 embuild = "0.33"

@@ -24,12 +24,16 @@ display gained error codes for setup failures: `fak_core::fault` and
 `setup_network` (section 5), and the changes that follow in sections 1, 6,
 and 8 (items 5 and 6).
 
+Revised on 2026-11-16 by the owner while implementing Task 5: the sensor's
+refresh interval and `display_loop`'s tick are 100 ms instead of 500 ms
+(section 4 and the boot sequence in section 5).
+
 Revised on 2026-11-06, reviewed twice (findings applied), and implemented in
 `fak-core` (commit `5e87c5a`): the display rule in section 4 became
 display-independent.
 Changed parts: the `readout` tests bullet, `fak-core/src/readout.rs` (`Readout<N>`,
 the `NumericScreen` trait, `FOUR_DIGITS`, `readout_for`), `src/display.rs` (the
-`Draw` trait, `Tm1637Screen`, generic `display_loop`), the display lines of
+`Draw` trait, `TM1637Screen`, generic `display_loop`), the display lines of
 the section 5 boot sequence, and section 8 items 4 and 5. The earlier review
 of `fak_core::readout` mentioned above covered the replaced `shown_value`
 version.
@@ -82,7 +86,7 @@ Publish this board's moisture readings to the `fak` broker, following the
 - MQTT5 connection with authentication and a persistent session.
 - `meta/availability` with an MQTT5 Last Will (online and offline states),
   republished as online after every reconnect.
-- `readings/<reading-id>` for each gauge on the board, published about
+- `readings/<name>` for each gauge on the board, published about
   every 60 seconds, retained, with a 180-second `messageExpiry`.
 - A restart path for setup failures and prolonged WiFi loss.
 - A `Gauge` trait that decouples sensors from MQTT.
@@ -347,7 +351,7 @@ The firmware logs the device ID at boot.
 ```rust
 // fak_core::topics
 pub fn availability_topic(device_id: &DeviceId) -> String; // fak/v1/devices/<device-id>/meta/availability
-pub fn reading_topic(device_id: &DeviceId, reading_id: &str) -> String; // fak/v1/devices/<device-id>/readings/<reading-id>
+pub fn reading_topic(device_id: &DeviceId, name: &str) -> String; // fak/v1/devices/<device-id>/readings/<name>
 ```
 
 ### Client configuration
@@ -394,7 +398,7 @@ pub struct MqttHandle {
 
 impl MqttHandle {
     /// Queues a reading. If the channel is full, logs a warning and drops it.
-    fn send_reading(&self, reading_id: &'static str, payload: String);
+    fn send_reading(&self, name: &'static str, payload: String);
 }
 
 pub fn start(device_id: &DeviceId, host: &str, password: &str) -> anyhow::Result<MqttHandle>;
@@ -432,7 +436,7 @@ calls `wait_connected`. Nothing is lost: `Signal` keeps its value until
 
 ```rust
 enum PublishRequest {
-    Reading { reading_id: &'static str, payload: String },
+    Reading { name: &'static str, payload: String },
     Online,
 }
 ```
@@ -535,7 +539,7 @@ fn mqtt_thread(mut client: EspMqttClient<'static>, requests_rx: Receiver<Publish
 
     loop {
         match requests_rx.recv() {
-            Ok(PublishRequest::Reading { reading_id, payload }) => {
+            Ok(PublishRequest::Reading { name, payload }) => {
                 // set reading_props; on Err, log and skip; else publish to reading_topic(...)
             }
             Ok(PublishRequest::Online) => {
@@ -697,7 +701,7 @@ impl From<bool> for Value {
     }
 }
 
-/// Exactly one message on `readings/<reading-id>`.
+/// Exactly one message on `readings/<name>`.
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
     pub value: Value,
@@ -706,9 +710,9 @@ pub struct Reading {
 }
 
 /// The latest value of one measured quantity, published as
-/// `readings/<reading-id>`.
+/// `readings/<name>`.
 pub trait Gauge {
-    fn reading_id(&self) -> &'static str;
+    fn name(&self) -> &'static str;
     /// `None` until the first successful read, or after a failed one.
     fn latest(&self) -> Option<Reading>;
 }
@@ -829,7 +833,7 @@ struct Sample {
 
 /// The shared part: what everyone reads.
 pub struct MoistureGauge {
-    reading_id: &'static str,
+    name: &'static str,
     latest: Cell<Option<Sample>>,
 }
 
@@ -843,7 +847,7 @@ pub struct MoistureSensor<'d, C: AdcChannel> {
 
 | Item | Visibility | Purpose |
 |---|---|---|
-| `MoistureGauge::new(reading_id)` | public | Starts with `latest` set to `None`. |
+| `MoistureGauge::new(name)` | public | Starts with `latest` set to `None`. |
 | `MoistureGauge::store(&self, Option<Sample>)` | private | The only way to write `latest`. |
 | `impl Gauge for MoistureGauge` | public | `latest()` maps the sample to `Reading { value: Value::from(percent), ts }`. |
 | `MoistureSensor::new(calibration, pin, adc, refresh_interval)` | public | Each sensor unit gets its own calibration and refresh interval. |
@@ -851,7 +855,7 @@ pub struct MoistureSensor<'d, C: AdcChannel> {
 | `MoistureSensor::sample(&mut self) -> anyhow::Result<Sample>` | private | Averages 30 `read()` calls, computes the percent, stamps `ts`. Returns the first error it hits. |
 
 `run()` logs on changes, not on every sample, so a broken sensor doesn't
-flood the log twice a second. It keeps a local `failing: bool`:
+flood the log ten times a second. It keeps a local `failing: bool`:
 
 - `Err(e)` while not failing: `log::warn!` with `{e:#}`, then set `failing`.
 - `Ok` while failing: `log::info!` that the sensor recovered, then clear it.
@@ -859,7 +863,7 @@ flood the log twice a second. It keeps a local `failing: bool`:
 
 Two consequences, both intended:
 
-- The `debug` line still prints twice a second while
+- The `debug` line still prints ten times a second while
   `lector_humedad::moisture_sensor` is in `DEBUG_TARGETS`. That's useful during
   development. Removing the module from the list silences it.
 - A *different* error while already failing isn't logged. Only the first
@@ -1143,7 +1147,7 @@ Design notes:
 ### `src/display.rs` (new)
 
 ```rust
-pub type Tm1637Display =
+pub type TM1637Display =
     TM1637<4, Async, PinDriver<'static, Output>, PinDriver<'static, Output>, embassy_time::Delay>;
 
 /// A screen the firmware can draw a `Readout` on.
@@ -1154,20 +1158,20 @@ pub trait Draw: NumericScreen {
 }
 
 /// The TM1637 module as a `NumericScreen` and a `Draw`.
-pub struct Tm1637Screen(Tm1637Display);
+pub struct TM1637Screen(TM1637Display);
 
-impl Tm1637Screen {
+impl TM1637Screen {
     /// Runs the driver's `init()` and wraps the display, so a
-    /// `Tm1637Screen` is always initialized.
-    pub async fn init(display: Tm1637Display) -> Result<Self, tm1637_embedded_hal::Error<GpioError>>;
+    /// `TM1637Screen` is always initialized.
+    pub async fn init(display: TM1637Display) -> Result<Self, tm1637_embedded_hal::Error<GpioError>>;
 }
 
-impl NumericScreen for Tm1637Screen {
+impl NumericScreen for TM1637Screen {
     type Number = i16;
     const DRAWABLE_RANGE: RangeInclusive<i16> = FOUR_DIGITS;
 }
 
-impl Draw for Tm1637Screen {
+impl Draw for TM1637Screen {
     type Error = tm1637_embedded_hal::Error<GpioError>;
 
     async fn show(&mut self, readout: Readout<i16>) -> Result<(), Self::Error>;
@@ -1197,7 +1201,7 @@ Notes:
   with E0038. `display_loop` takes a generic `S: Draw`. The firmware has one
   display chosen at compile time, so nothing needs `dyn` (see section 8 for
   choosing one at runtime).
-- `Tm1637Screen` wraps the driver in a newtype because of the orphan rule:
+- `TM1637Screen` wraps the driver in a newtype because of the orphan rule:
   the firmware can't implement a trait from `fak-core` (`NumericScreen`) on a
   type from `tm1637-embedded-hal`, but it can on its own wrapper.
 - The error type is the driver's `tm1637_embedded_hal::Error<ERR>`
@@ -1206,7 +1210,7 @@ Notes:
   `type Error = GpioError` (esp-idf-hal 0.47.0, `gpio.rs:1199`). The driver's
   error implements `Debug` but not `std::error::Error`, as section 6 expects.
 
-Every 500 ms, `display_loop` computes `readout_for::<S>(gauge.latest())` and
+Every 100 ms, `display_loop` computes `readout_for::<S>(gauge.latest())` and
 calls `screen.show(readout).await` only when the readout differs from the
 last one drawn. It keeps that one in a local
 `last_drawn: Option<Readout<S::Number>>`:
@@ -1254,7 +1258,7 @@ and `-`, but has no `W` and no uppercase `N` (both fall to `_ => 0`, a blank
 digit). That is why the words are `LO` and `On` rather than `LOW` and `ON`
 (decided 2026-11-06).
 
-`Tm1637Screen::show` draws every `Number(n)` with `r_i16_4(n)`. In 0.5.2,
+`TM1637Screen::show` draws every `Number(n)` with `r_i16_4(n)`. In 0.5.2,
 `r_i16_4(0)` draws `  -0` (zero falls through to the negative branch). The
 fix (JadKHaddad/tm1637#31) shipped in 0.5.3, which the firmware locks; there
 `r_i16_4(0)` draws `   0` (decided 2026-11-06). Each word is written as the
@@ -1363,7 +1367,7 @@ fn run() -> anyhow::Result<()> {
 
     // 1. The display comes first, so a later failure can show its code.
     let tm1637 = /* TM1637 on GPIO5 (CLK) and GPIO6 (DIO) */;
-    let mut screen = block_on(display::Tm1637Screen::init(tm1637))
+    let mut screen = block_on(display::TM1637Screen::init(tm1637))
         .map_err(|e| anyhow::anyhow!("{e:?}"))
         .context("initializing the display")?;
     show_or_warn(&mut screen, Readout::NoReading); // dashes while the network comes up
@@ -1385,7 +1389,7 @@ fn run() -> anyhow::Result<()> {
         MOISTURE_SENSOR_01_CALIBRATION,
         peripherals.pins.gpio0,
         &adc1,
-        Duration::from_millis(500),
+        Duration::from_millis(100),
     )
     .context("creating the moisture sensor")?;
     let gauges: [&dyn Gauge; 1] = [&moisture_gauge];
@@ -1435,7 +1439,7 @@ fn connect_mqtt(device_id: &DeviceId) -> anyhow::Result<MqttHandle> {
 
 /// Draws `readout` now, outside the display task. A failed write is only
 /// logged: it must not replace the error that setup is about to report.
-fn show_or_warn(screen: &mut display::Tm1637Screen, readout: Readout<i16>) {
+fn show_or_warn(screen: &mut display::TM1637Screen, readout: Readout<i16>) {
     if let Err(e) = block_on(screen.show(readout)) {
         log::warn!("failed to write to display: {e:?}");
     }
@@ -1449,7 +1453,7 @@ Notes on the error codes:
 - The display is initialized before the network, so it exists when a network
   step fails. `block_on` runs one future to completion on the current
   thread, and it works before the task array exists. Setup uses it for
-  `Tm1637Screen::init` and for each `show`, so setup stays ordinary
+  `TM1637Screen::init` and for each `show`, so setup stays ordinary
   top-to-bottom code and needs no `async`.
 - `setup_network` groups the three network steps. Each step returns
   `anyhow::Result`, and `map_err` wraps a failure in a `SetupError` that
@@ -1874,7 +1878,7 @@ These are separate pieces of future work.
    `Number(Drawable<S>)`, so the screen type appears in every signature. And
    `#[derive(Debug, Clone, Copy, PartialEq, Eq)]` on `Readout<S>` and
    `Drawable<S>` doesn't work: `derive` requires `S` itself to be `Debug`,
-   `Clone`, `Copy` and so on, and `Tm1637Screen` owns `PinDriver`s, which are
+   `Clone`, `Copy` and so on, and `TM1637Screen` owns `PinDriver`s, which are
    none of those (esp-idf-hal 0.47.0, `gpio.rs:422`, and `Drop` at
    `gpio.rs:1164`). The impls would be written by hand, bounded on
    `S::Number`, which then needs `Debug + Eq` in `NumericScreen::Number`'s

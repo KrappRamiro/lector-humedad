@@ -1,48 +1,26 @@
+mod display;
 mod moisture_sensor;
 
-use crate::moisture_sensor::MoistureSensor;
-use embassy_time::{Duration, Timer};
+use std::pin::Pin;
+
+use crate::{
+    display::TM1637Screen,
+    moisture_sensor::{MoistureGauge, MoistureSensor},
+};
+use embassy_futures::select::select_array;
+use embassy_time::Duration;
 use esp_idf_svc::hal::{
-    adc::{AdcChannel, oneshot::AdcDriver},
-    gpio::{Output, PinDriver},
-    peripherals::Peripherals,
-    task::block_on,
+    adc::oneshot::AdcDriver, gpio::PinDriver, peripherals::Peripherals, task::block_on,
 };
 use fak_core::moisture::Calibration;
-use tm1637_embedded_hal::{Brightness, TM1637, TM1637Builder, tokens::Async};
+use tm1637_embedded_hal::{Brightness, TM1637Builder};
 
-const POLL_INTERVAL: Duration = Duration::from_millis(100);
 // TODO: This calibration should instead be capable of being modified on runtime via MQTT, and not a const
 const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309, 780) {
     Ok(calibration) => calibration,
     Err(_) => panic!("Moisture sensor 01: dry reading must be above wet reading"),
 };
-
-type TM1637DisplayT =
-    TM1637<4, Async, PinDriver<'static, Output>, PinDriver<'static, Output>, embassy_time::Delay>;
-
-// --- --- //
-
-async fn sensor_display<C: AdcChannel>(
-    moisture_sensor: &mut MoistureSensor<'_, C>,
-    display: &mut TM1637DisplayT,
-) {
-    match moisture_sensor.read() {
-        Ok(percent) => {
-            if let Err(e) = display
-                .options()
-                .r_u16_4(u16::from(percent))
-                .display()
-                .await
-            {
-                log::error!("failed to write to display: {e:?}");
-            }
-        }
-        Err(e) => log::error!("failed to read sensor: {e:?}"),
-    }
-
-    Timer::after(POLL_INTERVAL).await;
-}
+const TASK_NAMES: [&str; 2] = ["moisture_sensor", "display"];
 
 fn main() -> anyhow::Result<()> {
     // It is necessary to call this function once. Otherwise, some patches to the runtime
@@ -77,23 +55,36 @@ fn main() -> anyhow::Result<()> {
     // - GPIO 20/21 --> UART RX/TX pins
     // See https://www.espboards.dev/blog/esp32-strapping-pins/
     // See https://esp32.com/viewtopic.php?p=83835
+
+    let moisture_gauge = MoistureGauge::new("moisture-01");
     let mut moisture_sensor = MoistureSensor::new(
         MOISTURE_SENSOR_01_CALIBRATION,
         peripherals.pins.gpio0,
         &adc1,
+        Duration::from_millis(100),
     )?;
 
-    // Create a TM1637 instance
     let tm1637_clk = PinDriver::output(peripherals.pins.gpio5)?;
     let tm1637_dio = PinDriver::output(peripherals.pins.gpio6)?;
     // ::<4> is for 4-digit displays
-    let mut display = TM1637Builder::new(tm1637_clk, tm1637_dio, embassy_time::Delay)
+    let tm1637 = TM1637Builder::new(tm1637_clk, tm1637_dio, embassy_time::Delay)
         .brightness(Brightness::L5)
         .build_async::<4>();
 
-    block_on(display.init()).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let mut screen = block_on(TM1637Screen::init(tm1637)).map_err(|e| anyhow::anyhow!("{e:?}"))?;
 
-    loop {
-        block_on(sensor_display(&mut moisture_sensor, &mut display));
-    }
+    // The tasks never end. If one does, it's a bug.
+    // If you add more tasks, please modify TASK_NAMES too
+    let tasks: [Pin<Box<dyn Future<Output = ()> + '_>>; 2] = [
+        Box::pin(moisture_sensor.run(&moisture_gauge)),
+        Box::pin(display::display_loop(&moisture_gauge, &mut screen)),
+    ];
+    let ((), index) = block_on(select_array(tasks));
+
+    // Normally, the code just loops, and nothing reaches beyond here.
+    // --- //
+    Err(anyhow::anyhow!(
+        "the {} task ended, but tasks run forever",
+        TASK_NAMES[index]
+    ))
 }

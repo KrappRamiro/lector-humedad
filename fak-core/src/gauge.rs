@@ -16,7 +16,7 @@ impl From<bool> for Value {
     }
 }
 
-/// What will be published into `readings/<reading-id>`
+/// What will be published into `readings/<name>`
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub struct Reading {
     pub value: Value,
@@ -26,7 +26,9 @@ pub struct Reading {
 
 /// Tracks some hardware sensor. Provides read access to the latest value of the sensor via the `latest` function
 pub trait Gauge {
-    fn reading_id(&self) -> &'static str;
+    /// Short name of what this gauge measures, for example `"moisture-01"`.
+    /// Used as the last segment of the `readings/<name>` topic.
+    fn name(&self) -> &'static str;
     /// `None` until the first reading, or after a failed one
     fn latest(&self) -> Option<Reading>;
 }
