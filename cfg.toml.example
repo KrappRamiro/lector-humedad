@@ -1,0 +1,7 @@
+[lector-humedad]
+wifi_ssid = "your-ssid"
+wifi_password = "your-wifi-password"
+mqtt_host = "your-mqtt-host"
+mqtt_password = "your-mqtt-password"
+# Optional. Defaults to 0.pool.ntp.org.
+# sntp_server = "0.pool.ntp.org"

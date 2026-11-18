@@ -1,3 +1,4 @@
+mod config;
 mod display;
 mod logging;
 mod moisture_sensor;
@@ -27,7 +28,9 @@ const TASK_NAMES: [&str; 2] = ["moisture_sensor", "display"];
 fn run() -> anyhow::Result<Infallible> {
     logging::init().context("initializing logging")?;
 
-    log::info!("Hello, world!");
+    log::info!("Welcome to lector humedad!");
+    log::info!("MQTT host: {}", config::MQTT_HOST);
+    log::info!("WiFi SSID: {}", config::WIFI_SSID);
 
     // Peripherals::take() , using a singleton, makes sure you dont try to interact with a pin in two different pieces of code
     let peripherals = Peripherals::take().context("taking hold of peripherals")?;

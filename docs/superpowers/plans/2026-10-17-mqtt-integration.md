@@ -18,7 +18,7 @@ dedicated `std::thread`, fed through a `std::sync::mpsc::sync_channel(8)`.
 
 **Tech Stack:** `esp-idf-svc` 0.53.0 (with `esp-idf-hal` 0.47.0 and
 `esp-idf-sys` 0.38.1, all from crates.io), ESP-IDF v6.1, `espressif/mqtt` 1.1.0, `embassy-time` 0.5.1, `embassy-sync` 0.8.0,
-`embassy-futures` 0.1.2, `toml-cfg`, `anyhow`, `log`, `tm1637-embedded-hal`
+`embassy-futures` 0.1.2, `serde` and `toml` (build only), `anyhow`, `log`, `tm1637-embedded-hal`
 0.5.3.
 
 **Spec:** `docs/superpowers/specs/2026-10-15-mqtt-integration-design.md`
@@ -388,43 +388,50 @@ less, never more?
 
 ---
 
-### Task 7: Build-time configuration (`toml-cfg`)
+### Task 7: Build-time configuration (`cfg.toml`, `env!`) (done)
 
 **Files:** Modify `Cargo.toml`, `build.rs`, `src/main.rs`,
-`.github/workflows/rust_ci.yml`; create `cfg.toml.example`; create your own
-`cfg.toml` (already gitignored).
+`.github/workflows/rust_ci.yml`; create `src/config.rs`, `cfg.toml.example`;
+create your own `cfg.toml` (already gitignored).
 
-**Interfaces (section 5, "Configuration"):** `Config` with `wifi_ssid`,
-`wifi_password`, `mqtt_host`, `mqtt_password` (all `#[default("")]`) and
-`sntp_server` (`#[default("0.pool.ntp.org")]`), declared in both `build.rs`
-and `main.rs`. The TOML table name is the package name: `[lector-humedad]`.
+**Interfaces (section 5, "Configuration"):** `build.rs` parses the
+`[lector-humedad]` table of `cfg.toml` into a `serde` struct and passes each
+value as `CFG_<KEY>` with `cargo::rustc-env`. `src/config.rs` exposes
+`WIFI_SSID`, `WIFI_PASSWORD`, `MQTT_HOST`, `MQTT_PASSWORD` and `SNTP_SERVER`
+as `&str` constants read with `env!`. Revised on 2026-11-18: the task started
+with `toml-cfg`, and the spec explains why it was dropped.
 
 **Concepts first:** build scripts run on the host, before compiling the
-crate; how `toml-cfg` turns a file into a `const CONFIG`; why the struct is
-declared twice; `panic!` in a build script fails the build.
+crate; `panic!` in a build script fails the build; `serde`'s `Deserialize`
+and `deny_unknown_fields`; `let-else` and match guards; `cargo::rustc-env`
+and `env!`; `#[expect]` versus `#[allow]`.
 
-- [ ] **Step 1:** Add `toml-cfg` as a dependency and a build dependency
-  (check the version `std-training` uses; take the current one if it builds).
-- [ ] **Step 2:** `cfg.toml.example` with the five keys and obvious
+- [x] **Step 1:** Add `serde` 1 (feature `derive`) and `toml` 1.2.1 as
+  build dependencies.
+- [x] **Step 2:** `cfg.toml.example` with the five keys and obvious
   placeholders (for example `"your-ssid"`).
-- [ ] **Step 3:** `build.rs` fails if `cfg.toml` is missing, if any value
-  equals its placeholder, or if any required value is empty. Keep
-  `embuild::espidf::sysenv::output()`.
-- [ ] **Step 4:** `main.rs` declares `Config`; log `CONFIG.mqtt_host` once at
-  `info` to see it works (never the passwords). The other fields have no
-  reader until Tasks 9 to 12. No attribute is needed for that: with
-  `toml-cfg`, unread `Config` fields don't trigger `dead_code` (checked on a
-  host mock with 0.1.3 and 0.2.0).
-- [ ] **Step 5: Prove each failure** (Review Focus 5): build without
-  `cfg.toml`, with the example copied unchanged, and with one value set to
-  `""`. Expected: three build errors, each naming the problem. Also check
-  that editing `cfg.toml` alone triggers a rebuild; if it doesn't, `build.rs`
-  needs `println!("cargo:rerun-if-changed=cfg.toml")`.
-- [ ] **Step 6: CI.** `cfg.toml` is gitignored, so a clean checkout has none
+- [x] **Step 3:** `build.rs` parses `cfg.toml` and fails if the file is
+  missing, unreadable or invalid, if a key is missing or unknown, if any
+  value is empty, equals its placeholder, or contains a line break. It
+  prints `cargo::rerun-if-changed=cfg.toml` and one `cargo::rustc-env` per
+  value, and keeps `embuild::espidf::sysenv::output()`.
+- [x] **Step 4:** `src/config.rs` with the five constants; `main.rs` declares
+  `mod config;` and logs `config::MQTT_HOST` and `config::WIFI_SSID` once at
+  `info` (never the passwords). The constants without a reader until Tasks
+  9, 11 and 12 carry `#[expect(dead_code, reason = "...")]`.
+- [x] **Step 5: Prove each failure** (Review Focus 5): build without
+  `cfg.toml`, with the example copied unchanged, with one value set to `""`,
+  with `sntp_server = ""`, with `[lector_humedad]`, with `wifi_sid`, with a
+  value containing `\n`, and with the file unreadable. Expected: a build
+  error naming the problem each time. Also check that these pass: build
+  without `cfg.toml`, then create it and build again (the `toml-cfg`
+  version failed here), and a password with `"` and `\`. Changing
+  `mqtt_host` must put the new value in the firmware binary.
+- [x] **Step 6: CI.** `cfg.toml` is gitignored, so a clean checkout has none
   and the gate's clippy and build would fail. In
   `.github/workflows/rust_ci.yml`, add a step before `Run checks` that writes
   a `cfg.toml` with made-up values (not the example's placeholders).
-- [ ] **Step 7:** Gate, review, commit, push: `feat: add build-time configuration`.
+- [x] **Step 7:** Gate, review, commit, push: `feat: add build-time configuration`.
   Expected on GitHub: the job is green.
 
 ---

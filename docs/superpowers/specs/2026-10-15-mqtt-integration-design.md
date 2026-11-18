@@ -28,6 +28,13 @@ Revised on 2026-11-16 by the owner while implementing Task 5: the sensor's
 refresh interval and `display_loop`'s tick are 100 ms instead of 500 ms
 (section 4 and the boot sequence in section 5).
 
+Revised on 2026-11-18 by the owner while implementing Task 7, after a code
+review: `toml_cfg` is gone. `build.rs` is the only reader of `cfg.toml`. It
+checks the file with `serde` and `toml` and passes each value to the
+compiler with `cargo::rustc-env`, and `src/config.rs` reads them with
+`env!` (section 5, "Configuration" and "Build configuration"; sections 3
+and 5 read `config::*` instead of the macro's constant).
+
 Revised on 2026-11-06, reviewed twice (findings applied), and implemented in
 `fak-core` (commit `5e87c5a`): the display rule in section 4 became
 display-independent.
@@ -367,7 +374,7 @@ here are `core::time::Duration`, not `embassy_time::Duration`.
 | `keep_alive_interval` | `Some(core::time::Duration::from_secs(30))` | The default becomes 120 s, so the broker would take 1.5 × 120 s to notice a dead board, plus the will delay. |
 | `lwt` | availability topic, `fak_core::payload::OFFLINE`, QoS 1, retained | `Will` |
 | `username` | device ID | ACL `%u` |
-| `password` | `CONFIG.mqtt_password` | |
+| `password` | `config::MQTT_PASSWORD` | |
 | `mqtt5_connection_property` | see below | |
 
 ```rust
@@ -387,7 +394,7 @@ bound anyway: esp-mqtt expires queued messages after
 longer than 30 seconds, queued QoS 1 readings are dropped. That's acceptable,
 because a newer reading replaces them once the board reconnects.
 
-Broker URL: `mqtt://<CONFIG.mqtt_host>:1883`.
+Broker URL: `mqtt://<config::MQTT_HOST>:1883`.
 
 ### `mqtt::start`
 
@@ -1279,37 +1286,82 @@ The display never touches sensor hardware.
 
 ### Configuration
 
-Credentials come from a gitignored `cfg.toml`, read at build time by
-`toml_cfg`, following `std-training/intro/http-client`:
+Credentials come from a gitignored `cfg.toml`, which `build.rs` reads on
+the development machine at build time:
+
+```toml
+[lector-humedad]
+wifi_ssid = "..."
+wifi_password = "..."
+mqtt_host = "..."
+mqtt_password = "..."
+# Optional. Defaults to 0.pool.ntp.org.
+# sntp_server = "..."
+```
+
+`build.rs` checks the file and passes each value to the compiler as an
+environment variable named `CFG_` plus the key in upper case. For example:
+`cargo::rustc-env=CFG_WIFI_SSID=...`. The firmware reads them in
+`src/config.rs`:
 
 ```rust
-#[toml_cfg::toml_config]
-pub struct Config {
-    #[default("")]
-    wifi_ssid: &'static str,
-    #[default("")]
-    wifi_password: &'static str,
-    #[default("")]
-    mqtt_host: &'static str,
-    #[default("")]
-    mqtt_password: &'static str,
-    #[default("0.pool.ntp.org")]
-    sntp_server: &'static str,
-}
+//! Settings from `cfg.toml`, fixed at compile time.
+//! `build.rs` checks the file and passes each value as an environment variable.
+
+pub const WIFI_SSID: &str = env!("CFG_WIFI_SSID");
+pub const WIFI_PASSWORD: &str = env!("CFG_WIFI_PASSWORD");
+pub const MQTT_HOST: &str = env!("CFG_MQTT_HOST");
+pub const MQTT_PASSWORD: &str = env!("CFG_MQTT_PASSWORD");
+pub const SNTP_SERVER: &str = env!("CFG_SNTP_SERVER");
 ```
+
+Until a constant has a reader, it carries
+`#[expect(dead_code, reason = "...")]`, which names the task that adds the
+reader. `expect` fails the build once the warning is gone, so the attribute
+can't outlive its reason.
 
 - There's no `mqtt_user`, because the username is the device ID.
 - `sntp_server` is optional. Without it, the board uses `0.pool.ntp.org`,
-  the same server `EspSntp::new_default()` uses. Set it to a hostname or an
-  IP address to use a local SNTP server instead. An IP address skips DNS,
-  because lwIP's DNS lookup returns IP literals directly (`dns.c:1798` in
-  ESP-IDF v6.1's lwIP).
-- A committed `cfg.toml.example` shows the expected keys.
-- `toml_cfg` needs the same `Config` struct declared in `build.rs` too, as in
-  `std-training`.
-- `build.rs` fails the build if `cfg.toml` is missing, if a value still has a
-  placeholder, or if a value is empty. With `#[default("")]`, a missing key
-  silently becomes `""`, so the empty check is what catches it.
+  the same server `EspSntp::new_default()` uses. The default lives in
+  `build.rs` (`DEFAULT_SNTP_SERVER`). Set it to a hostname or an IP address
+  to use a local SNTP server instead. An IP address skips DNS, because
+  lwIP's DNS lookup returns IP literals directly (`dns.c:1798` in ESP-IDF
+  v6.1's lwIP).
+- A committed `cfg.toml.example` shows the expected keys, with placeholders
+  such as `"your-ssid"`.
+- `build.rs` parses the file with `serde` and `toml` into a `Config` struct
+  (`String` fields, `sntp_server` as `Option<String>`), with
+  `#[serde(deny_unknown_fields)]` on the file and on the `[lector-humedad]`
+  table. It fails the build if `cfg.toml` is missing or can't be read
+  (with the I/O error), if it isn't valid TOML, if the table or a required
+  key is missing, if a key is unknown (a typo such as `wifi_sid`), if a
+  value is empty or still has its placeholder, or if a value contains a line
+  break (a `cargo::` instruction ends at the line break).
+- `build.rs` prints `cargo::rerun-if-changed=cfg.toml`. Editing the file
+  reruns the checks, and a changed value recompiles the firmware, because
+  Cargo tracks `rustc-env` values.
+- Why not `toml_cfg`, which `std-training` uses: three problems found while
+  implementing Task 7, checked with `toml-cfg` 0.2.0.
+  - In `build.rs`, the macro fixes its constant when the script is compiled,
+    not when it runs. It marks `cfg.toml` as a compile dependency (with an
+    `include_bytes!` it generates) only when the file exists. After one
+    build without `cfg.toml`, creating the file reruns the old script
+    without recompiling it, so the check still sees the defaults. The build
+    script's dep-info file in `target/` lists `cfg.toml` only after a build
+    that found it.
+  - A value with `"` or `\` (common in WiFi passwords) makes the macro fail
+    with "Failed to parse ... as a valid token!".
+  - In `main.rs`, the macro looks for `cfg.toml` on its own path (from
+    rustc's `--out-dir`) and parses it with `toml` 0.8. When it can't find
+    or parse the file, every field becomes its default `""` without an
+    error, even after `build.rs` accepted the file.
+- Values are plain text in the firmware binary, as with any compile-time
+  constant. They also appear in Cargo's saved build script output in
+  `target/` and in `cargo build -vv`. Both stay on the development machine.
+- A parse error quotes the offending line of `cfg.toml`, value included.
+  With a typo in a password key, the password shows in the build output.
+  Accepted: it only happens on a local build with a broken file, and CI's
+  values are made up.
 - CI has no `cfg.toml`, because the file is gitignored. The workflow writes
   one with made-up values (not the example's placeholders) before it runs
   `devenv test`. `build.rs` stays strict and has no bypass.
@@ -1411,7 +1463,7 @@ fn run() -> anyhow::Result<Infallible> {
 fn setup_network(modem: Modem<'static>, sysloop: EspSystemEventLoop) -> Result<Network, SetupError> {
     let (wifi, device_id) = connect_wifi(modem, sysloop)
         .map_err(|source| SetupError { fault: Fault::Wifi, source })?;
-    let sntp = sntp::sync(CONFIG.sntp_server, Duration::from_secs(30))
+    let sntp = sntp::sync(config::SNTP_SERVER, Duration::from_secs(30))
         .context("syncing time over SNTP")
         .map_err(|source| SetupError { fault: Fault::Sntp, source })?;
     let mqtt = connect_mqtt(&device_id)
@@ -1423,7 +1475,7 @@ fn connect_wifi(
     modem: Modem<'static>,
     sysloop: EspSystemEventLoop,
 ) -> anyhow::Result<(EspWifi<'static>, DeviceId)> {
-    let wifi = wifi::connect(CONFIG.wifi_ssid, CONFIG.wifi_password, modem, sysloop)
+    let wifi = wifi::connect(config::WIFI_SSID, config::WIFI_PASSWORD, modem, sysloop)
         .context("connecting to WiFi")?;
     let mac = wifi.get_mac(WifiDeviceId::Sta).context("reading the MAC address")?;
     let device_id = DeviceId::from_mac(mac);
@@ -1432,7 +1484,7 @@ fn connect_wifi(
 }
 
 fn connect_mqtt(device_id: &DeviceId) -> anyhow::Result<MqttHandle> {
-    let mqtt = mqtt::start(device_id, CONFIG.mqtt_host, CONFIG.mqtt_password)
+    let mqtt = mqtt::start(device_id, config::MQTT_HOST, config::MQTT_PASSWORD)
         .context("starting the MQTT client")?;
     mqtt::wait_connected(Duration::from_secs(30)).context("waiting for the MQTT broker")?;
     Ok(mqtt)
@@ -1598,7 +1650,8 @@ pub fn fail_and_restart(reason: &anyhow::Error) -> ! {
 ### Build configuration
 
 - `Cargo.toml`:
-  - Add `toml-cfg` (dependency and build dependency).
+  - Add `serde` 1 (feature `derive`) and `toml` 1.2.1 as build
+    dependencies.
   - Add `embassy-futures` (`select_array`). Version 0.1.2 is already in
     `Cargo.lock` as a transitive dependency.
   - Add `embassy-sync` (`Signal`). Version 0.8.0 is already in `Cargo.lock` as
