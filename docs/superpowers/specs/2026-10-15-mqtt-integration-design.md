@@ -1330,6 +1330,7 @@ pub struct Config {
 
 ```rust
 use anyhow::Context as _; // adds .context() to Result and Option
+use std::convert::Infallible;
 
 const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309, 780) {
     Ok(calibration) => calibration,
@@ -1341,8 +1342,8 @@ const TASK_NAMES: [&str; 4] = ["moisture sensor", "display", "MQTT publish", "Wi
 
 fn main() {
     esp_idf_svc::sys::link_patches();
-    if let Err(e) = run() {
-        restart::fail_and_restart(&e);
+    match run() {
+        Err(e) => restart::fail_and_restart(&e),
     }
 }
 
@@ -1360,7 +1361,7 @@ struct SetupError {
     source: anyhow::Error,
 }
 
-fn run() -> anyhow::Result<()> {
+fn run() -> anyhow::Result<Infallible> {
     logging::init().context("setting log levels")?; // see section 6
     let peripherals = Peripherals::take().context("taking peripherals")?;
     let sysloop = EspSystemEventLoop::take().context("taking the system event loop")?;
@@ -1499,6 +1500,12 @@ Notes:
   `run()`, and `main()` hands them to `fail_and_restart`. `anyhow`'s `?`
   converts `EspError` and any other type that implements `std::error::Error`
   automatically.
+- `run()` returns `anyhow::Result<Infallible>`, not `anyhow::Result<()>`.
+  `Infallible` has no values, so `run()` can only return `Err`, which matches
+  what it does: its tasks run forever. The `match` in `main()` needs no `Ok`
+  arm, because Rust (1.82 and later) treats `Ok(Infallible)` as impossible.
+  `Result<!>` would say the same, but `!` as a type parameter is still
+  unstable.
 - The calibration isn't a setup step: `MOISTURE_SENSOR_01_CALIBRATION` was already
   checked when the firmware was built.
 - Each step adds a `.context(..)`. Without it, a failure logs only the inner
@@ -1897,6 +1904,19 @@ These are separate pieces of future work.
      gauge. Whether a fault replaces the reading or alternates with it is
      undecided.
    - Codes for setup failures outside the network (the ADC, the sensor).
+   - **Why the last boot ended.** The board runs without USB, so a panic,
+     a crash in C code (WiFi, MQTT), a watchdog or a brownout must be
+     visible without the serial log. None of these pass through
+     `fail_and_restart`, and C crashes, watchdogs and brownouts don't pass
+     through a Rust panic hook either. At boot, read
+     `esp_idf_svc::hal::reset::ResetReason::get()` (esp-idf-hal 0.47.0,
+     `reset.rs:7`; variants include `Panic`, `TaskWatchdog`,
+     `InterruptWatchdog`, `Brownout`), show a code on the display for the
+     abnormal ones, and publish the reason over MQTT once connected. New
+     `Fault` variants and codes still to choose. Also set
+     `CONFIG_ESP_SYSTEM_PANIC_REBOOT_DELAY_SECONDS=10` in
+     `sdkconfig.defaults` (today it's 0), so a panic at every boot doesn't
+     become a fast reboot loop.
    - A buzzer sound in `fail_and_restart` (active or passive buzzer still to
      decide; free and safe pins are GPIO1, GPIO3, GPIO4, GPIO7, and GPIO10).
    - LEDs.

@@ -351,7 +351,7 @@ in bounds, and which part of that does the compiler not check?
 
 ---
 
-### Task 6: `main`/`run`, `fail_and_restart`, `logging::init`, `.context()`
+### Task 6: `main`/`run`, `fail_and_restart`, `logging::init`, `.context()` (done)
 
 **Files:** Create `src/restart.rs`, `src/logging.rs`; modify `src/main.rs`.
 
@@ -361,7 +361,7 @@ in bounds, and which part of that does the compiler not check?
   `esp_idf_svc::hal::reset::restart()`); `pub fn logging::init() -> anyhow::Result<()>`
   with `DEBUG_TARGETS` (section 6; only modules that exist so far, plus
   `lector_humedad::logging` and `lector_humedad::restart`);
-  `fn run() -> anyhow::Result<()>` called by a `main()` that returns nothing.
+  `fn run() -> anyhow::Result<Infallible>` called by a `main()` that returns nothing.
 
 **Concepts first:** the never type `!`; why `main()` doesn't return
 `Result` here; `anyhow::Context` and error chains; `{e}` versus `{e:#}` versus
@@ -372,18 +372,18 @@ both.
 `AdcDriver::new` failed? Why would a module missing from `DEBUG_TARGETS` log
 less, never more?
 
-- [ ] **Step 1:** `restart.rs`.
-- [ ] **Step 2:** `logging.rs`; delete the two `set_target_level` calls from
+- [x] **Step 1:** `restart.rs`.
+- [x] **Step 2:** `logging.rs`; delete the two `set_target_level` calls from
   `main.rs`.
-- [ ] **Step 3:** Split `main` into `main` and `run`; add `.context(..)` to
+- [x] **Step 3:** Split `main` into `main` and `run`; add `.context(..)` to
   every existing setup step, with the messages from section 5.
-- [ ] **Step 4: Prove the restart path.** Temporarily add
+- [x] **Step 4: Prove the restart path.** Temporarily add
   `anyhow::bail!("test failure")` at the start of `run`. Expected: one
   `error` line with the chain, a 10 s pause, a reboot. Revert.
-- [ ] **Step 5: Prove the log filter.** Temporarily remove
+- [x] **Step 5: Prove the log filter.** Temporarily remove
   `lector_humedad::moisture_sensor` from `DEBUG_TARGETS`. Expected: its
   `debug` lines disappear. Revert.
-- [ ] **Step 6:** Gate, review, commit:
+- [x] **Step 6:** Gate, review, commit:
   `feat: add restart path, logging policy and error context`.
 
 ---

@@ -1,18 +1,20 @@
 mod display;
+mod logging;
 mod moisture_sensor;
-
-use std::pin::Pin;
+mod restart;
 
 use crate::{
     display::TM1637Screen,
     moisture_sensor::{MoistureGauge, MoistureSensor},
 };
+use anyhow::Context as _;
 use embassy_futures::select::select_array;
 use embassy_time::Duration;
 use esp_idf_svc::hal::{
     adc::oneshot::AdcDriver, gpio::PinDriver, peripherals::Peripherals, task::block_on,
 };
 use fak_core::moisture::Calibration;
+use std::{convert::Infallible, pin::Pin};
 use tm1637_embedded_hal::{Brightness, TM1637Builder};
 
 // TODO: This calibration should instead be capable of being modified on runtime via MQTT, and not a const
@@ -22,31 +24,19 @@ const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309,
 };
 const TASK_NAMES: [&str; 2] = ["moisture_sensor", "display"];
 
-fn main() -> anyhow::Result<()> {
-    // It is necessary to call this function once. Otherwise, some patches to the runtime
-    // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
-    esp_idf_svc::sys::link_patches();
-
-    // Init a logger that uses Debug as the target level
-    let logger = esp_idf_svc::log::init_from_esp_idf();
-    // lector_humedad is the Rust project name, but with - converted to _
-    logger
-        .filter()
-        .set_target_level("lector_humedad", log::LevelFilter::Debug)?;
-    logger
-        .filter()
-        .set_target_level("lector_humedad::moisture_sensor", log::LevelFilter::Debug)?;
+fn run() -> anyhow::Result<Infallible> {
+    logging::init().context("initializing logging")?;
 
     log::info!("Hello, world!");
 
     // Peripherals::take() , using a singleton, makes sure you dont try to interact with a pin in two different pieces of code
-    let peripherals = Peripherals::take()?;
+    let peripherals = Peripherals::take().context("taking hold of peripherals")?;
 
     // AdcDriver owns the ADC.
     // there's just one usable unit on the ESP32 C3: adc1. It is used regardless of which GPIO between 0 and 4 is used
     // adc2 does exist, but its usage its not recommended,
     // see https://docs.espressif.com/projects/esp-chip-errata/en/latest/esp32c3/03-errata-description/index.html
-    let adc1 = AdcDriver::new(peripherals.adc1)?;
+    let adc1 = AdcDriver::new(peripherals.adc1).context("creating the ADC1 driver")?;
 
     // When choosing pins, remember:
     // - GPIO 0-4   --> ADC pins
@@ -62,16 +52,21 @@ fn main() -> anyhow::Result<()> {
         peripherals.pins.gpio0,
         &adc1,
         Duration::from_millis(100),
-    )?;
+    )
+    .context("creating the moisture sensor")?;
 
-    let tm1637_clk = PinDriver::output(peripherals.pins.gpio5)?;
-    let tm1637_dio = PinDriver::output(peripherals.pins.gpio6)?;
+    let tm1637_clk = PinDriver::output(peripherals.pins.gpio5)
+        .context("setting GPIO5 as output for TM1637 CLK")?;
+    let tm1637_dio = PinDriver::output(peripherals.pins.gpio6)
+        .context("setting GPIO6 as output for TM1637 DIO")?;
     // ::<4> is for 4-digit displays
     let tm1637 = TM1637Builder::new(tm1637_clk, tm1637_dio, embassy_time::Delay)
         .brightness(Brightness::L5)
         .build_async::<4>();
 
-    let mut screen = block_on(TM1637Screen::init(tm1637)).map_err(|e| anyhow::anyhow!("{e:?}"))?;
+    let mut screen = block_on(TM1637Screen::init(tm1637))
+        .map_err(|e| anyhow::anyhow!("{e:?}"))
+        .context("creating the TM1637 screen")?;
 
     // The tasks never end. If one does, it's a bug.
     // If you add more tasks, please modify TASK_NAMES too
@@ -87,4 +82,14 @@ fn main() -> anyhow::Result<()> {
         "the {} task ended, but tasks run forever",
         TASK_NAMES[index]
     ))
+}
+
+fn main() {
+    // It is necessary to call this function once. Otherwise, some patches to the runtime
+    // implemented by esp-idf-sys might not link properly. See https://github.com/esp-rs/esp-idf-template/issues/71
+    esp_idf_svc::sys::link_patches();
+    match run() {
+        Err(e) => restart::fail_and_restart(&e),
+        // Because run() its Infallible, match does not ask for Ok(). Pretty neat huh
+    }
 }
