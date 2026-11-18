@@ -668,9 +668,9 @@ first reading about 60 seconds later. That's expected, not a bug.
 
 ```rust
 // fak_core::payload
-pub const OFFLINE: &str = r#"{"state":"offline"}"#; // the Last Will
-pub fn online(ts: u64) -> String;                   // {"state":"online","ts":<ts>}
-pub fn reading(reading: &Reading) -> String;        // {"value":<value>,"ts":<ts>}
+pub const OFFLINE: &str = r#"{ "state": "offline" }"#; // the Last Will
+pub fn online(ts: u64) -> String;                     // { "state": "online", "ts": <ts> }
+pub fn reading(reading: &Reading) -> String;          // { "value": <value>, "ts": <ts> }
 ```
 
 `Value::Integer` formats as a JSON number and `Value::Bool` as `true` or
@@ -1992,7 +1992,7 @@ These are separate pieces of future work.
 11. **Fixes in `fak-docs` and `fak-supporting`.**
    - Readings use `"value"`, but the actionable `state` example uses `"v"`.
      Pick one.
-   - Document the boolean payload (`{"value": true}`).
+   - Document the boolean payload (`{ "value": true, "ts": <ts> }`).
    - Document that `ts` is the measurement time, not the send time.
    - `acl.md` lists `meta/health`, but `organizacion-topicos.md` names it
      `meta/metrics`. Pick one.

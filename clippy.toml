@@ -1,0 +1,2 @@
+# Esto hace que clippy no hinche los huevos en los comentarios para poner "WiFi" en backticks
+doc-valid-idents = ["WiFi", ".."]

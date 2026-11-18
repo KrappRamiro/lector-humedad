@@ -1,6 +1,6 @@
 # lector-humedad — learning context
 
-This is a learning project: an ESP32-C3 station that reads soil moisture and
+This is a learning project: an ESP32-C3 device that reads soil moisture and
 reacts to it. The user is not new to Rust but is rusty and relearning
 embedded/ESP32-specific concepts. Treat this project as a teaching context,
 not a normal "implement the feature" task.

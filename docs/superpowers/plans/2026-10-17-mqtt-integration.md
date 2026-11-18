@@ -436,7 +436,7 @@ and `env!`; `#[expect]` versus `#[allow]`.
 
 ---
 
-### Task 8: `topics` and `payload` (test-first)
+### Task 8: `topics` and `payload` (test-first, done)
 
 **Files:** Create `fak-core/src/topics.rs`, `fak-core/src/payload.rs`; modify
 `fak-core/src/lib.rs`.
@@ -453,7 +453,7 @@ and `env!`; `#[expect]` versus `#[allow]`.
 `format!` with `{:02x}`; `core::fmt::Write` and `write!` into a `String`;
 raw strings `r#"..."#` for JSON in tests.
 
-- [ ] **Step 1: Failing tests** (MAC `[0xa0, 0xb7, 0x65, 0x3f, 0x1c, 0x22]`
+- [x] **Step 1: Failing tests** (MAC `[0xa0, 0xb7, 0x65, 0x3f, 0x1c, 0x22]`
   unless noted):
 
   | Test | Assertion |
@@ -463,17 +463,17 @@ raw strings `r#"..."#` for JSON in tests.
   | `device_id_displays_as_its_string` | `format!("{id}") == id.as_str()` |
   | `availability_topic_layout` | `"fak/v1/devices/a0b7653f1c22/meta/availability"` |
   | `reading_topic_layout` | with `"moisture-01"`: `"fak/v1/devices/a0b7653f1c22/readings/moisture-01"` |
-  | `integer_reading_payload` | `Integer(42)`, ts `1700000000`: `{"value":42,"ts":1700000000}` |
-  | `negative_integer_reading_payload` | `Integer(-5)`: `{"value":-5,"ts":1700000000}` |
-  | `bool_reading_payload` | `Bool(true)`: `{"value":true,"ts":1700000000}` |
-  | `online_payload` | `online(1700000000) == {"state":"online","ts":1700000000}` |
-  | `offline_payload` | `OFFLINE == {"state":"offline"}` |
+  | `integer_reading_payload` | `Integer(42)`, ts `1082728800`: `{ "value": 42, "ts": 1082728800 }` |
+  | `negative_integer_reading_payload` | `Integer(-5)`: `{ "value": -5, "ts": 1082728800 }` |
+  | `bool_reading_payload` | `Bool(true)`: `{ "value": true, "ts": 1082728800 }` |
+  | `online_payload` | `online(1082728800) == { "state": "online", "ts": 1082728800 }` |
+  | `offline_payload` | `OFFLINE == { "state": "offline" }` |
 
-- [ ] **Step 2:** `cargo test-core`: fails to compile.
-- [ ] **Step 3: Implement.** `payload::reading` matches on `Value` (no
+- [x] **Step 2:** `cargo test-core`: fails to compile.
+- [x] **Step 3: Implement.** `payload::reading` matches on `Value` (no
   wildcard arm, so a new variant forces an update).
-- [ ] **Step 4:** `cargo test-core`: passes.
-- [ ] **Step 5:** Gate, review, commit: `feat(core): add device ID, topics and payloads`.
+- [x] **Step 4:** `cargo test-core`: passes.
+- [x] **Step 5:** Gate, review, commit: `feat(core): add device ID, topics and payloads`.
 
 ---
 
@@ -632,8 +632,8 @@ it.
   `_` would drop the handle at once).
 - [ ] **Step 8: Board.** With `mosquitto_sub -v -t 'fak/v1/devices/#'` (and
   the broker credentials) on your machine: expected a retained
-  `{"state":"online","ts":...}`. Power the board off: after about
-  45 s (keep-alive) plus 60 s (will delay), `{"state":"offline"}`. Also
+  `{ "state": "online", "ts": ... }`. Power the board off: after about
+  45 s (keep-alive) plus 60 s (will delay), `{ "state": "offline" }`. Also
   check: the `online` came from a `try_send` on esp-mqtt's task (open item 4).
   Log the MQTT thread's stack high-water mark once (open item 2).
 - [ ] **Step 9: Review Focus 1.** Wrong `mqtt_password`. Expected: esp-mqtt
@@ -671,7 +671,7 @@ versus a new `Timer` each loop; why the first reading comes 60 s after start
   name in `TASK_NAMES`. The boot sequence now matches section 5 except for
   the error codes (display first, `setup_network`), which arrive in Task 14.
 - [ ] **Step 5: Board.** Expected: about 60 s after boot, a retained message
-  on `.../readings/moisture-01` like `{"value":43,"ts":...}`, then one per
+  on `.../readings/moisture-01` like `{ "value": 43, "ts": ... }`, then one per
   minute.
 - [ ] **Step 6: Expiry.** Power the board off. Expected: the retained reading
   disappears from the broker within 180 s of its last publish.
