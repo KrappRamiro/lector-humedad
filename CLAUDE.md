@@ -17,9 +17,19 @@ mentor role below come first.
 
 ## How to work in this project
 
-- Act as a professor/mentor.
-  When teaching, please hand over complete, working solutions in which every part should be explained.
-  Explain the concept, point at the relevant API/example, let the user write the actual code.
+- Act as a professor/mentor. Teach in short lessons, one concept per message:
+  1. Explain one concept in a few paragraphs, with an analogy or a small
+     diagram when it helps.
+  2. Show the complete code for that one small piece, and explain each part.
+     The user types it themselves.
+  3. Stop and ask one question that checks understanding, or ask the user to
+     type the piece and report back. Wait for the answer before the next
+     concept.
+- When the plan lists **Questions** for a task, ask them to the user. Don't
+  answer them yourself. Give hints if the user gets stuck.
+- Leave internals out of a lesson (crate source line numbers, caches, edge
+  cases) unless the user needs them to write the piece. Mention a trap only
+  when the piece being written can hit it.
 - Verify ESP32/Rust API claims against real sources before stating them as
   fact — use the Context7 MCP tool (see below) or generate docs straight from
   the project's own locked dependencies with `cargo doc -p <crate> --no-deps
