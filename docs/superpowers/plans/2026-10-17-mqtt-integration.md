@@ -477,7 +477,7 @@ raw strings `r#"..."#` for JSON in tests.
 
 ---
 
-### Task 9: `wifi::connect` and the device ID
+### Task 9: `wifi::connect` and the device ID (done)
 
 **Files:** Create `src/wifi.rs`; modify `src/main.rs`, `src/logging.rs`.
 
@@ -492,18 +492,18 @@ comment; `Peripherals::take` and moving `modem` out.
 **Read first:** `/home/krapp/dev/fak/std-training/common/lib/wifi/src/lib.rs`
 (adapt, don't copy: the `Peripheral` trait there doesn't exist in this HAL).
 
-- [ ] **Step 1:** `connect` with NVS, `esp_wifi_set_max_tx_power(30)` after
+- [x] **Step 1:** `connect` with NVS, `esp_wifi_set_max_tx_power(30)` after
   `start()`, and up to 5 attempts (`disconnect()` and 500 ms between them).
-- [ ] **Step 2:** In `run()`: `Peripherals::take`, `EspSystemEventLoop::take`,
+- [x] **Step 2:** In `run()`: `Peripherals::take`, `EspSystemEventLoop::take`,
   `wifi::connect`, `get_mac(WifiDeviceId::Sta)`, `DeviceId::from_mac`, then
   `log::info!("device id: {device_id}")`. Each with its `.context`.
-- [ ] **Step 3:** Add `lector_humedad::wifi` to `DEBUG_TARGETS`.
-- [ ] **Step 4: Board.** Expected: WiFi connects, the device ID is logged,
+- [x] **Step 3:** Add `lector_humedad::wifi` to `DEBUG_TARGETS`.
+- [x] **Step 4: Board.** Expected: WiFi connects, the device ID is logged,
   no "NVS has not been initialized" line, moisture still shown.
-- [ ] **Step 5: Prove the failure path.** Wrong SSID in `cfg.toml`.
+- [x] **Step 5: Prove the failure path.** Wrong SSID in `cfg.toml`.
   Expected: 5 attempts, then `fail_and_restart` with "connecting to WiFi" in
   the chain. Restore.
-- [ ] **Step 6:** Gate, review, commit: `feat: connect to WiFi at boot`.
+- [x] **Step 6:** Gate, review, commit: `feat: connect to WiFi at boot`.
 
 ---
 
