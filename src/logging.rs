@@ -7,6 +7,7 @@ const DEBUG_TARGETS: &[&str] = &[
     "lector_humedad::logging",
     "lector_humedad::moisture_sensor",
     "lector_humedad::restart",
+    "lector_humedad::wifi",
 ];
 
 /// Installs the logger and sets each target level.

@@ -7,18 +7,20 @@ use esp_idf_svc::{
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
 
-/// Maximum transmit power, in units of 0.25 dBm. 34 is 8.5 dBm.
+/// Maximum transmit power, in units of 0.25 dBm. The driver rounds it down to a
+/// supported step: 30 falls in `[28, 33]`, which gives 28, so 7 dBm
+/// (`esp_wifi.h` in ESP-IDF v6.1).
 /// Some ESP32-C3 Super Mini boards have a bad antenna design and can't connect at full power.
-/// See https://forum.arduino.cc/t/no-wifi-connect-with-esp32-c3-super-mini/1324046/24
-const MAX_TX_POWER: i8 = 34;
+/// See <https://forum.arduino.cc/t/no-wifi-connect-with-esp32-c3-super-mini/1324046/24>
+const MAX_TX_POWER: i8 = 30;
 
 /// How many times `connect` tries to join the network before giving up.
 const MAX_CONNECT_ATTEMPTS: u8 = 5;
 
-/// Pause between two connection attemps, in milliseconds.
+/// Pause between two connection attempts, in milliseconds.
 const RETRY_DELAY_MS: u32 = 500;
 
-/// Connects to the wifi specified in cfg.toml
+/// Connects to the given WiFi network and waits until it has an IP address.
 pub fn connect(
     ssid: &str,
     password: &str,
@@ -43,40 +45,50 @@ pub fn connect(
         ssid: ssid.try_into().context("SSID is longer than 32 bytes")?,
         password: password
             .try_into()
-            .context("Wifi password is longer than 64 bytes")?,
+            .context("WiFi password is longer than 64 bytes")?,
         auth_method: AuthMethod::WPA2Personal, // el modo de auth mas debil aceptado.
         ..Default::default()
     });
     wifi.set_configuration(&config)
         .context("setting the WiFi configuration")?;
-    wifi.start().context("Starting the wifi")?;
+    wifi.start().context("starting the WiFi driver")?;
 
     // al ESP32 C3 hay que bajarle la potencia, la antena que tiene por default es una verga
     // SAFETY: This is safe, because in the previous lines, the driver was initialized (EspWifi::new) and started (wifi.start), which the function requires.
     esp!(unsafe { esp_wifi_set_max_tx_power(MAX_TX_POWER) })
-        .context("Lowering the Wifi transmit power")?;
+        .context("lowering the WiFi transmit power")?;
 
     // Logic for connecting to internet with retry incorporated
     for attempt in 1..=MAX_CONNECT_ATTEMPTS {
-        log::info!("connnecting to wifi, attempt {attempt}/{MAX_CONNECT_ATTEMPTS}");
+        log::info!("connecting to WiFi, attempt {attempt}/{MAX_CONNECT_ATTEMPTS}");
         let result = wifi
             .connect()
             .context("connecting to the WiFi network")
             // If everything ok, wait for DHCP and the underlying network interface
-            .and_then(|()| wifi.wait_netif_up().context("Waiting for an IP address"));
+            .and_then(|()| wifi.wait_netif_up().context("waiting for an IP address"));
 
         match result {
             Ok(()) => break,
             Err(e) if attempt < MAX_CONNECT_ATTEMPTS => {
-                log::warn!("Wifi attempt {attempt} failed: {e:#}");
-                // Leaves the driver in a clean "not connected" state afor the next attempt.
+                log::warn!("WiFi attempt {attempt} failed: {e:#}");
+                // Leaves the driver in a clean "not connected" state for the next attempt.
                 // This could help if, for example, wait_netif_up failed leaving us associated with the router, but without any IP
-                wifi.disconnect().context("disconnecting before retrying")?;
+                // A failed disconnect must not end the retry loop, so log it and keep going.
+                if let Err(e) = wifi.disconnect() {
+                    log::warn!("disconnecting before retrying failed: {e}");
+                }
                 FreeRtos::delay_ms(RETRY_DELAY_MS);
             }
             Err(e) => return Err(e),
         }
     }
+
+    let ip_info = wifi
+        .wifi()
+        .sta_netif()
+        .get_ip_info()
+        .context("reading the station IP address")?;
+    log::info!("WiFi up, IP {}", ip_info.ip);
 
     // Al final del día, es EspWifi el dueño de la conexión. Mientras este valor viva (y no sea droppeado), la conexión va a seguir viva.
     Ok(esp_wifi)

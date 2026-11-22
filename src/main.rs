@@ -12,10 +12,12 @@ use crate::{
 use anyhow::Context as _;
 use embassy_futures::select::select_array;
 use embassy_time::Duration;
-use esp_idf_svc::hal::{
-    adc::oneshot::AdcDriver, gpio::PinDriver, peripherals::Peripherals, task::block_on,
+use esp_idf_svc::{
+    eventloop::EspSystemEventLoop,
+    hal::{adc::oneshot::AdcDriver, gpio::PinDriver, peripherals::Peripherals, task::block_on},
+    wifi::WifiDeviceId,
 };
-use fak_core::moisture::Calibration;
+use fak_core::{moisture::Calibration, topics::DeviceId};
 use std::{convert::Infallible, pin::Pin};
 use tm1637_embedded_hal::{Brightness, TM1637Builder};
 
@@ -35,6 +37,24 @@ fn run() -> anyhow::Result<Infallible> {
 
     // Peripherals::take() , using a singleton, makes sure you dont try to interact with a pin in two different pieces of code
     let peripherals = Peripherals::take().context("taking hold of peripherals")?;
+
+    // Wifi
+    let sysloop = EspSystemEventLoop::take().context("taking the system event loop")?;
+    // NEVER DROP `wifi_driver` !!!
+    // It holds the wifi connection, if you drop it, you break the internet connection
+    let wifi_driver = wifi::connect(
+        config::WIFI_SSID,
+        config::WIFI_PASSWORD,
+        peripherals.modem,
+        sysloop,
+    )
+    .context("connecting to WiFi")?;
+
+    let mac = wifi_driver
+        .get_mac(WifiDeviceId::Sta)
+        .context("reading the WiFi station MAC address")?;
+    let device_id = DeviceId::from_mac(mac);
+    log::info!("device id: {device_id}");
 
     // AdcDriver owns the ADC.
     // there's just one usable unit on the ESP32 C3: adc1. It is used regardless of which GPIO between 0 and 4 is used
