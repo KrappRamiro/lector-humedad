@@ -26,7 +26,7 @@ const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309,
     Ok(calibration) => calibration,
     Err(_) => panic!("Moisture sensor 01: dry reading must be above wet reading"),
 };
-const TASK_NAMES: [&str; 2] = ["moisture_sensor", "display"];
+const TASK_NAMES: [&str; 3] = ["moisture_sensor", "display", "WiFi monitor"];
 
 fn run() -> anyhow::Result<Infallible> {
     logging::init().context("initializing logging")?;
@@ -42,7 +42,7 @@ fn run() -> anyhow::Result<Infallible> {
     let sysloop = EspSystemEventLoop::take().context("taking the system event loop")?;
     // NEVER DROP `wifi_driver` !!!
     // It holds the wifi connection, if you drop it, you break the internet connection
-    let wifi_driver = wifi::connect(
+    let mut wifi_driver = wifi::connect(
         config::WIFI_SSID,
         config::WIFI_PASSWORD,
         peripherals.modem,
@@ -94,9 +94,10 @@ fn run() -> anyhow::Result<Infallible> {
 
     // The tasks never end. If one does, it's a bug.
     // If you add more tasks, please modify TASK_NAMES too
-    let tasks: [Pin<Box<dyn Future<Output = ()> + '_>>; 2] = [
+    let tasks: [Pin<Box<dyn Future<Output = ()> + '_>>; 3] = [
         Box::pin(moisture_sensor.run(&moisture_gauge)),
         Box::pin(display::display_loop(&moisture_gauge, &mut screen)),
+        Box::pin(wifi::monitor(&mut wifi_driver)),
     ];
     let ((), index) = block_on(select_array(tasks));
 

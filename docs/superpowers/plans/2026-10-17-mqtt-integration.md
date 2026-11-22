@@ -67,7 +67,7 @@ board check in the task named.
    restart; readings older than 30 s are dropped, `online` is republished on
    reconnect, and readings resume. The sensor and display keep updating the
    whole time. (Task 13, Step 7.)
-3. **The WiFi access point reboots.** Expected: a drop shorter than 60 s
+3. **The WiFi access point reboots.** Expected: a drop shorter than 3 min
    recovers with one `warn` and one `info`; a longer one restarts the board.
    (Task 10, Step 7.)
 4. **The sensor's AOUT wire comes loose.** Expected, per the current design:
@@ -507,13 +507,13 @@ comment; `Peripherals::take` and moving `modem` out.
 
 ---
 
-### Task 10: `LinkMonitor` (test-first) and `wifi::monitor`
+### Task 10: `LinkMonitor` (test-first) and `wifi::monitor` (done)
 
 **Files:** Create `fak-core/src/link.rs`; modify `fak-core/src/lib.rs`,
 `src/wifi.rs`, `src/main.rs`.
 
 **Interfaces (section 2):**
-- Produces: `pub const DOWN_LIMIT: core::time::Duration` (60 s);
+- Produces: `pub const DOWN_LIMIT: core::time::Duration` (3 min, was 60 s);
   `#[must_use] pub enum Action { Wait, Reconnect, Retry, Recovered, Restart }`;
   `#[derive(Debug, Default)] pub struct LinkMonitor`;
   `pub fn step(&mut self, is_up: bool, now: core::time::Duration) -> Action`;
@@ -524,7 +524,7 @@ comment; `Peripherals::take` and moving `modem` out.
 time without waiting (passing `now` in); `saturating_sub`; `#[must_use]` on
 a type; `Default` derive.
 
-- [ ] **Step 1: Failing tests** (`s(n)` meaning `Duration::from_secs(n)`;
+- [x] **Step 1: Failing tests** (`s(n)` meaning `Duration::from_secs(n)`;
   each test uses a fresh `LinkMonitor::default()` and the calls listed in
   order):
 
@@ -539,24 +539,25 @@ a type; `Default` derive.
   | `drop_after_recovery_reconnects_and_restarts_the_timer` | down at 10, up at 20, `step(false, s(30))` is `Reconnect`, `step(false, s(30) + DOWN_LIMIT - Duration::from_millis(1))` is `Retry` |
   | `clock_going_backwards_does_not_panic` | `step(false, s(10))`, then `step(false, s(5))` is `Retry` |
 
-- [ ] **Step 2:** `cargo test-core`: fails to compile.
-- [ ] **Step 3: Implement `step`** from the table in section 2.
-- [ ] **Step 4:** `cargo test-core`: passes.
-- [ ] **Step 5: `wifi::monitor`.** Every 5 s: `is_up()` (an `Err` counts as
+- [x] **Step 2:** `cargo test-core`: fails to compile.
+- [x] **Step 3: Implement `step`** from the table in section 2.
+- [x] **Step 4:** `cargo test-core`: passes.
+- [x] **Step 5: `wifi::monitor`.** Every 5 s: `is_up()` (an `Err` counts as
   down), `now` from `embassy_time::Instant`, `step`, then act (section 2).
   `Reconnect` and `Retry` both call `wifi.connect()`, unless
   `wifi.is_connected()` is `Ok(true)` (link up, still waiting for an IP
   address); a failing call is logged at `warn` for `Reconnect` and at
   `debug` for `Retry`.
-- [ ] **Step 6:** Add it as the third task, with its name third in
+- [x] **Step 6:** Add it as the third task, with its name third in
   `TASK_NAMES`.
-- [ ] **Step 7: Board** (Review Focus 3). Switch the access point off for
-  about 20 s: one `warn`, one `info`, no restart. Then for over 60 s: a
+- [x] **Step 7: Board** (Review Focus 3; the display check was skipped,
+  see spec section 2). Switch the access point off for
+  about 20 s: one `warn`, one `info`, no restart. Then for over `DOWN_LIMIT`: a
   restart with "WiFi" in the reason. Display keeps updating throughout.
   Note what `wifi.connect()` returns on the retries (the `debug` lines), and
   whether the WiFi library prints its own line on each retry. Record both in
   the spec's section 2.
-- [ ] **Step 8:** Gate, review, commit: `feat: monitor WiFi and restart after a long drop`.
+- [x] **Step 8:** Gate, review, commit: `feat: monitor WiFi and restart after a long drop`.
 
 ---
 

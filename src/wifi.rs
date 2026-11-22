@@ -1,11 +1,15 @@
 use anyhow::Context;
+use embassy_time::{Duration, Instant, Timer};
 use esp_idf_svc::{
     eventloop::EspSystemEventLoop,
     hal::{delay::FreeRtos, modem::Modem},
     nvs::EspDefaultNvsPartition,
-    sys::{esp, esp_wifi_set_max_tx_power},
+    sys::{EspError, esp, esp_wifi_set_max_tx_power},
     wifi::{AuthMethod, BlockingWifi, ClientConfiguration, Configuration, EspWifi},
 };
+use fak_core::link::{Action, DOWN_LIMIT, LinkMonitor};
+
+use crate::restart;
 
 /// Maximum transmit power, in units of 0.25 dBm. The driver rounds it down to a
 /// supported step: 30 falls in `[28, 33]`, which gives 28, so 7 dBm
@@ -19,6 +23,9 @@ const MAX_CONNECT_ATTEMPTS: u8 = 5;
 
 /// Pause between two connection attempts, in milliseconds.
 const RETRY_DELAY_MS: u32 = 500;
+
+/// How often `monitor` checks the wifi link
+const CHECK_INTERVAL: Duration = Duration::from_secs(5);
 
 /// Connects to the given WiFi network and waits until it has an IP address.
 pub fn connect(
@@ -92,4 +99,47 @@ pub fn connect(
 
     // Al final del día, es EspWifi el dueño de la conexión. Mientras este valor viva (y no sea droppeado), la conexión va a seguir viva.
     Ok(esp_wifi)
+}
+
+/// Watches the wifi link forever.
+/// Reconnects after a drop, and restarts the board if the link stays down for `DOWN_LIMIT`
+pub async fn monitor(wifi: &mut EspWifi<'static>) {
+    let mut link = LinkMonitor::default();
+
+    loop {
+        Timer::after(CHECK_INTERVAL).await;
+
+        // An error reading the state counts as down.
+        let is_up = matches!(wifi.is_up(), Ok(true));
+        // we need core::time::duration, and not embassy_time::Duration,
+        // because fak_core uses core:: and not embassy_time::
+        let now = core::time::Duration::from_millis(Instant::now().as_millis());
+
+        match link.step(is_up, now) {
+            Action::Wait => {}
+            Action::Reconnect => {
+                log::warn!("WiFi link lost, reconnecting");
+                if let Err(e) = reconnect(wifi) {
+                    log::warn!("Reconnecting to wifi failed: {e}");
+                }
+            }
+            Action::Retry => {
+                if let Err(e) = reconnect(wifi) {
+                    log::debug!("Reconnecting to wifi failed again: {e}");
+                }
+            }
+            Action::Recovered => log::info!("Wifi link back"),
+            Action::Restart => restart::fail_and_restart(&anyhow::anyhow!(
+                "WiFi was down for {} s",
+                DOWN_LIMIT.as_secs()
+            )),
+        }
+    }
+}
+
+fn reconnect(wifi: &mut EspWifi<'static>) -> Result<(), EspError> {
+    if matches!(wifi.is_connected(), Ok(true)) {
+        return Ok(());
+    }
+    wifi.connect()
 }

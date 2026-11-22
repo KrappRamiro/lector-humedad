@@ -164,8 +164,10 @@ broker. `is_up()` returns `Result<bool>`; an `Err` counts as "down".
   (`esp_wifi.h:483` in ESP-IDF v6.1). One call per drop would only recover if
   the access point were already back when that one attempt ran, so an access
   point reboot would always end in a restart.
-- If WiFi is still down 60 seconds after the drop, it calls
-  `restart::fail_and_restart`.
+- If WiFi is still down 3 minutes after the drop, it calls
+  `restart::fail_and_restart`. The limit was 60 seconds at first. On the
+  board, a router reboot kept WiFi down for about 72 seconds, so 60 seconds
+  restarted the board on every router reboot.
 
 The monitor takes `&mut EspWifi` because it's the only code that uses WiFi
 after setup. It's named "monitor", not "watchdog", so it isn't confused with
@@ -176,7 +178,7 @@ The decision lives in `fak-core`, so it's testable without WiFi or real time:
 ```rust
 // fak_core::link
 /// How long the link may stay down before the board restarts.
-pub const DOWN_LIMIT: core::time::Duration = core::time::Duration::from_secs(60);
+pub const DOWN_LIMIT: core::time::Duration = core::time::Duration::from_mins(3);
 
 #[must_use]
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -217,7 +219,7 @@ impl LinkMonitor {
   `monitor.step(..);` whose result is ignored. Pedantic's
   `must_use_candidate` doesn't cover this, because it skips `&mut self`
   methods.
-- `DOWN_LIMIT` is the one place the 60 seconds is written. The code and the
+- `DOWN_LIMIT` is the one place the 3 minutes is written. The code and the
   tests both use it, so changing it can't leave a test checking the old
   value.
 
@@ -228,8 +230,10 @@ on the result:
   `wifi.connect()`. If that call itself returns `Err`, it logs the error as a
   warning and carries on.
 - `Retry` (every later check while still down): calls `wifi.connect()` again.
-  An `Err` here is logged at `debug` only. The call may fail while the
-  previous attempt is still in progress (not confirmed on the board), and a
+  An `Err` here is logged at `debug` only. On the board (Task 10, Step 7),
+  every retry call returned `Ok` while the access point was off: the call
+  only starts an attempt, and a missing access point arrives later as an
+  event. The `debug` line stays for the case that wasn't seen, and a
   warning every 5 seconds would break the "log changes, not repetitions"
   rule. `Reconnect` and `Retry` are separate results so that `step`, which
   is tested, tells the first check of a drop from the later ones, and the
@@ -242,16 +246,18 @@ on the result:
   call does otherwise is inside the closed-source WiFi library. Skipping it
   avoids depending on that. An `Err` from `is_connected()` counts as not
   connected.
-- Open, to check on the board: whether the WiFi library logs its own warning
-  each time a `connect()` is rejected. Its tag (`wifi`) is at the default
-  Info level, so such a line would print every 5 seconds whatever the Rust
-  level is. If it does, lower that tag's level in `logging::init`.
+- Checked on the board: the WiFi library prints no line of its own on each
+  retry. Its tag (`wifi`) stayed silent from the drop until the access point
+  came back, so `logging::init` doesn't lower that tag's level.
+- Not checked on the board: whether the display keeps updating while WiFi is
+  down. It should, because `connect()` returns at once and the monitor
+  spends the rest of each check in `Timer::after`.
 - `Recovered`: logs at `info`.
-- `Restart`: calls `fail_and_restart` with an error saying WiFi was down for
-  60 seconds.
+- `Restart`: calls `fail_and_restart` with an error saying how long WiFi was
+  down (`DOWN_LIMIT` in seconds).
 
-Tests cover each row of the table, including exactly 59.999 s (`Retry`) and
-exactly 60 s (`Restart`), and a recovery followed by a new drop, which must
+Tests cover each row of the table, including 1 ms under `DOWN_LIMIT`
+(`Retry`) and exactly `DOWN_LIMIT` (`Restart`), and a recovery followed by a new drop, which must
 return `Reconnect` again. `now` is a `core::time::Duration`, because
 `fak-core` doesn't depend on `embassy-time`. The firmware converts with
 `core::time::Duration::from_millis(Instant::now().as_millis())`.
@@ -1745,7 +1751,7 @@ prints ESP-IDF's panic output and reboots right away, skipping
 | MQTT thread | Property setter fails | That publish skipped | `error` |
 | MQTT thread | Publish returns `Err` | Message stays in the outbox | `warn` |
 | Event callback | `Disconnected`, `Error` | The C client reconnects on its own | `warn`, `error` |
-| `wifi::monitor` | WiFi down | A reconnect attempt on every check, restart after 60 s | `warn` on the drop and if its first reconnect call fails, `debug` if a retry call fails, `info` on recovery |
+| `wifi::monitor` | WiFi down | A reconnect attempt on every check, restart after 3 min | `warn` on the drop and if its first reconnect call fails, `debug` if a retry call fails, `info` on recovery |
 | Anywhere | Broken invariant | Panic, immediate reboot | ESP-IDF panic output |
 
 ### Logging
@@ -1919,8 +1925,14 @@ These are separate pieces of future work.
 2. **Multi-gauge sensors.** Follow the sensor and gauge split from
    section 4 when the first such chip is added.
 3. **Full WiFi reconnection handling.** The WiFi monitor retries every
-   5 seconds and restarts after 60 seconds. A fuller version would retry
+   5 seconds and restarts after 3 minutes. A fuller version would retry
    with backoff and keep the board running through long outages.
+   Two cases it doesn't handle, found in review: a station that is
+   associated but never gets an IP address (a broken DHCP server) is
+   skipped on every check until the restart, because nothing calls
+   `disconnect()`. And a connection attempt that takes longer than 5 seconds
+   gets a new `connect()` call on the next check. The board test showed
+   neither (association took about 2.4 s).
 4. **Choosing the screen at runtime.** `Draw` isn't dyn compatible (section
    4), so the display is picked at compile time. Picking it from
    configuration would need an enum over the screens, or a second trait with
