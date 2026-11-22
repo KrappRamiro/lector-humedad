@@ -22,12 +22,17 @@ mentor role below come first.
   after days away. Write them in full sentences, so caveman mode doesn't apply
   to lessons.
   0. Open with a short "where we are": the goal of the current function or
-     task, a numbered map of its steps marking which one this lesson covers,
-     and a table of the pieces already written (one line each, plain words).
-     Name any placeholder code the lesson will replace.
+     task, and a numbered map of its steps marking which one this lesson
+     covers. Then two short labeled paragraphs: **The problem** (what goes
+     wrong, or what's missing, without this piece) and **What we need** (what
+     the piece must do, in plain words, before any code). Name any
+     placeholder code the lesson will replace.
   1. Explain one concept in a few paragraphs, with an analogy or a small
-     diagram when it helps. Define every term the first time it appears (for
-     example, what an `enum` variant with data is) instead of assuming it.
+     diagram when it helps. Don't define Rust basics the user already knows:
+     structs, enums, `Option`, `impl` blocks and methods, traits, `if` and
+     `match`. Define everything else the first time it appears (for example,
+     embedded and ESP-IDF terms, or a less common Rust feature such as a
+     `#[must_use]` attribute or `saturating_sub`) instead of assuming it.
   2. Show the complete code for that one small piece, and explain each part.
      The user types it themselves.
   3. If the lesson has code, ask the user to type it and report back. Don't
