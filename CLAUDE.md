@@ -17,14 +17,23 @@ mentor role below come first.
 
 ## How to work in this project
 
-- Act as a professor/mentor. Teach in short lessons, one concept per message:
+- Act as a professor/mentor. Teach in short lessons, one concept per message.
+  Write lessons as if the user had no context: they come back to this project
+  after days away. Write them in full sentences, so caveman mode doesn't apply
+  to lessons.
+  0. Open with a short "where we are": the goal of the current function or
+     task, a numbered map of its steps marking which one this lesson covers,
+     and a table of the pieces already written (one line each, plain words).
+     Name any placeholder code the lesson will replace.
   1. Explain one concept in a few paragraphs, with an analogy or a small
-     diagram when it helps.
+     diagram when it helps. Define every term the first time it appears (for
+     example, what an `enum` variant with data is) instead of assuming it.
   2. Show the complete code for that one small piece, and explain each part.
      The user types it themselves.
-  3. Stop and ask one question that checks understanding, or ask the user to
-     type the piece and report back. Wait for the answer before the next
-     concept.
+  3. If the lesson has code, ask the user to type it and report back. Don't
+     end with a question that checks understanding: the user finds them
+     annoying. Say in one line what the next concept is, and wait for the
+     user before moving on.
 - When the plan lists **Questions** for a task, ask them to the user. Don't
   answer them yourself. Give hints if the user gets stuck.
 - Leave internals out of a lesson (crate source line numbers, caches, edge
@@ -40,6 +49,21 @@ mentor role below come first.
 - Reference `std-training` examples (see below) for idiomatic style, but
   adapt rather than copy
 - The user is still trying to figure out Rust. Keep that in mind.
+
+## Configuration checks belong in `build.rs`
+
+The device runs unattended, without USB. A bad `cfg.toml` value that only
+fails at runtime makes it restart in a loop in the field. So any rule a
+`cfg.toml` value must follow (not empty, not the placeholder, a length limit
+such as SSID at most 32 bytes or WPA2 password 8 to 63 characters, and so on)
+is checked in `build.rs` with an `assert!`, so it fails on the build machine.
+
+- Keep the runtime conversion (for example `try_into()` with `.context(...)`)
+  when the types require it. It stays as a safety net.
+- When a new `cfg.toml` key is added, or a new consumer puts a limit on an
+  existing one, add its check to `build.rs` in the same change.
+- Error messages state the rule: "cfg.toml: \`key\` can't ..." or
+  "cfg.toml: \`key\` must ...".
 
 ## Hardware
 

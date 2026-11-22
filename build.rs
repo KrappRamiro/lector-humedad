@@ -54,6 +54,18 @@ fn main() {
         .unwrap_or_else(|e| panic!("cfg.toml is invalid:\n{e}"))
         .lector_humedad;
 
+    // The WiFi driver stores the SSID in 32 bytes, and a WPA2 passphrase has 8 to 63
+    // characters. Checking here turns a bad value into a build error instead of a boot
+    // loop on the device. len() counts bytes, the same unit as those limits.
+    assert!(
+        config.wifi_ssid.len() <= 32,
+        "cfg.toml: `wifi_ssid` can't be longer than 32 bytes"
+    );
+    assert!(
+        (8..=63).contains(&config.wifi_password.len()),
+        "cfg.toml: `wifi_password` must have 8 to 63 characters"
+    );
+
     let sntp_server = config
         .sntp_server
         .unwrap_or_else(|| DEFAULT_SNTP_SERVER.to_owned());

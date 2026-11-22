@@ -3,6 +3,7 @@ mod display;
 mod logging;
 mod moisture_sensor;
 mod restart;
+mod wifi;
 
 use crate::{
     display::TM1637Screen,
