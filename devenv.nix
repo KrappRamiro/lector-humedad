@@ -98,6 +98,15 @@ in
     description = "Run clippy with pedantic lints as warnings";
   };
 
+  # Same lints, but applies the suggestions clippy can fix by itself.
+  # `--allow-dirty` lets it run with uncommitted changes in the tree.
+  scripts.clippy-pedantic-fix = {
+    exec = ''
+      clippy-pedantic --fix --allow-dirty "$@"
+    '';
+    description = "Run clippy-pedantic and apply its automatic fixes";
+  };
+
   enterTest = ''
     # devenv test hides stdout when the script succeeds; send it to stderr so results stay visible
     exec 1>&2
