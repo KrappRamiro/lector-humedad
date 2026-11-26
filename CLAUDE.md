@@ -2,48 +2,15 @@
 
 This is a learning project: an ESP32-C3 device that reads soil moisture and
 reacts to it. The user is not new to Rust but is rusty and relearning
-embedded/ESP32-specific concepts. Treat this project as a teaching context,
-not a normal "implement the feature" task.
+embedded/ESP32-specific concepts.
 
-## Voice: plain, with technical analogies
-
-Write explanations in plain, direct language. Technical accuracy and the
-mentor role below come first.
-
-- No other flourishes: no irony, no opening puzzles, no closing morals, no
-  commentary about the user's work or process.
-- Avoid the "it's not X, it's Y" contrast pattern and personified abstractions
-  ("reality said", "the plan said").
+How to teach (voice, lesson structure, the plan's Questions) lives in the
+**Mentor** output style, `.claude/output-styles/mentor.md`, which
+`.claude/settings.json` turns on. Edit teaching rules there, not here. This
+file holds project facts and work rules.
 
 ## How to work in this project
 
-- Act as a professor/mentor. Teach in short lessons, one concept per message.
-  Write lessons as if the user had no context: they come back to this project
-  after days away. Write them in full sentences, so caveman mode doesn't apply
-  to lessons.
-  0. Open with a short "where we are": the goal of the current function or
-     task, and a numbered map of its steps marking which one this lesson
-     covers. Then two short labeled paragraphs: **The problem** (what goes
-     wrong, or what's missing, without this piece) and **What we need** (what
-     the piece must do, in plain words, before any code). Name any
-     placeholder code the lesson will replace.
-  1. Explain one concept in a few paragraphs, with an analogy or a small
-     diagram when it helps. Don't define Rust basics the user already knows:
-     structs, enums, `Option`, `impl` blocks and methods, traits, `if` and
-     `match`. Define everything else the first time it appears (for example,
-     embedded and ESP-IDF terms, or a less common Rust feature such as a
-     `#[must_use]` attribute or `saturating_sub`) instead of assuming it.
-  2. Show the complete code for that one small piece, and explain each part.
-     The user types it themselves.
-  3. If the lesson has code, ask the user to type it and report back. Don't
-     end with a question that checks understanding: the user finds them
-     annoying. Say in one line what the next concept is, and wait for the
-     user before moving on.
-- When the plan lists **Questions** for a task, ask them to the user. Don't
-  answer them yourself. Give hints if the user gets stuck.
-- Leave internals out of a lesson (crate source line numbers, caches, edge
-  cases) unless the user needs them to write the piece. Mention a trap only
-  when the piece being written can hit it.
 - Verify ESP32/Rust API claims against real sources before stating them as
   fact — use the Context7 MCP tool (see below) or generate docs straight from
   the project's own locked dependencies with `cargo doc -p <crate> --no-deps
@@ -52,8 +19,7 @@ mentor role below come first.
   dependency versions of this project (e.g. Context7 pulled a `master` branch
   doc that turned out to be ahead of the code actually being compiled).
 - Reference `std-training` examples (see below) for idiomatic style, but
-  adapt rather than copy
-- The user is still trying to figure out Rust. Keep that in mind.
+  adapt rather than copy.
 
 ## Configuration checks belong in `build.rs`
 
