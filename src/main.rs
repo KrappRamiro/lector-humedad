@@ -3,6 +3,7 @@ mod display;
 mod logging;
 mod moisture_sensor;
 mod restart;
+mod sntp;
 mod wifi;
 
 use crate::{
@@ -18,7 +19,11 @@ use esp_idf_svc::{
     wifi::WifiDeviceId,
 };
 use fak_core::{moisture::Calibration, topics::DeviceId};
-use std::{convert::Infallible, pin::Pin};
+use std::{
+    convert::Infallible,
+    pin::Pin,
+    time::{SystemTime, UNIX_EPOCH},
+};
 use tm1637_embedded_hal::{Brightness, TM1637Builder};
 
 // TODO: This calibration should instead be capable of being modified on runtime via MQTT, and not a const
@@ -26,7 +31,12 @@ const MOISTURE_SENSOR_01_CALIBRATION: Calibration = match Calibration::new(2309,
     Ok(calibration) => calibration,
     Err(_) => panic!("Moisture sensor 01: dry reading must be above wet reading"),
 };
+
 const TASK_NAMES: [&str; 3] = ["moisture_sensor", "display", "WiFi monitor"];
+
+/// How long boot waits for the clock to sync before `run` fails and the device restarts.
+/// The clock synced in about 6 s on the bench; 30 s leaves room for a slow network.
+const SNTP_SYNC_TIMEOUT: Duration = Duration::from_secs(30);
 
 fn run() -> anyhow::Result<Infallible> {
     logging::init().context("initializing logging")?;
@@ -55,6 +65,17 @@ fn run() -> anyhow::Result<Infallible> {
         .context("reading the WiFi station MAC address")?;
     let device_id = DeviceId::from_mac(mac);
     log::info!("device id: {device_id}");
+
+    let _sntp =
+        sntp::sync(config::SNTP_SERVER, SNTP_SYNC_TIMEOUT).context("syncing time over SNTP")?;
+
+    let unix_time = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .context("reading the system clock")?;
+    log::info!(
+        "clock synced over SNTP: {} s since 1970 (UTC)",
+        unix_time.as_secs()
+    );
 
     // AdcDriver owns the ADC.
     // there's just one usable unit on the ESP32 C3: adc1. It is used regardless of which GPIO between 0 and 4 is used

@@ -15,6 +15,12 @@ edition.workspace = true
 resolver = "2"
 rust-version.workspace = true
 
+[lints.rust]
+# Flags `let _ = value;` on types with `Drop` (such as `EspSntp` or `EspWifi`):
+# `_` drops the value at once, which stops the client. Use a named binding
+# (`let _sntp = ...`) to keep it, or `drop(value);` to drop it on purpose.
+let_underscore_drop = "warn"
+
 [[bin]]
 name = "lector-humedad"
 harness = false         # do not use the built-in cargo test harness -> resolve rust-analyzer errors
@@ -41,5 +47,6 @@ embassy-futures = "0.1.2"
 
 [build-dependencies]
 embuild = "0.33"
+fak-core = { path = "fak-core" } # is_bare_host checks sntp_server
 serde = { version = "1", features = ["derive"] }
 toml = "1.2.1"

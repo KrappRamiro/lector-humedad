@@ -2,6 +2,7 @@
 // It is the only reader of cfg.toml: it checks the file and hands each value to the
 // compiler as an environment variable, which src/config.rs reads with env!().
 
+use fak_core::host::is_bare_host;
 use serde::Deserialize;
 use std::{fs, io};
 
@@ -121,6 +122,11 @@ fn main() {
         // See https://docs.rs/cargo-build/latest/cargo_build/fn.rustc_env.html
         println!("cargo::rustc-env={variable}={value}");
     }
+
+    assert!(
+        is_bare_host(&sntp_server),
+        "cfg.toml: `sntp_server` must be a bare hostname or IP address, without a scheme, port, path, or trailing dot"
+    );
 
     embuild::espidf::sysenv::output();
 }
