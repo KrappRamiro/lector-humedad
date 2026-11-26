@@ -561,7 +561,7 @@ a type; `Default` derive.
 
 ---
 
-### Task 11: `sntp::sync`
+### Task 11: `sntp::sync` (done)
 
 **Files:** Create `src/sntp.rs`; modify `src/main.rs`, `src/logging.rs`.
 
@@ -571,15 +571,17 @@ a type; `Default` derive.
 versus `_`); polling with a deadline; `SntpConf::servers` sized by a Kconfig
 value, and why `[server]` stops compiling if that value changes.
 
-- [ ] **Step 1:** Implement with `SntpConf { servers: [server], ..Default::default() }`,
-  polling `get_sync_status()` every 100 ms with `FreeRtos::delay_ms` until
+- [x] **Step 1:** Implement with `SntpConf::default()` and `conf.servers[0] = server`
+  (keeps compiling if `CONFIG_LWIP_SNTP_MAX_SERVERS` grows), polling
+  `get_sync_status()` every 100 ms with `FreeRtos::delay_ms` until
   `SyncStatus::Completed` or the timeout.
-- [ ] **Step 2:** Call it after WiFi with 30 s, keep `_sntp`, log the synced
+- [x] **Step 2:** Call it after WiFi with 30 s, keep `_sntp`, log the synced
   time at `info`. Sensors must start after this line.
-- [ ] **Step 3: Board.** Expected: the logged time is today's date in UTC.
-- [ ] **Step 4: Prove the timeout.** Set `sntp_server` to an IP that doesn't
+- [x] **Step 3: Board.** Expected: the logged time is today's date in UTC.
+- [x] **Step 4: Prove the timeout.** Set `sntp_server` to an IP that doesn't
   answer. Expected: restart after ~30 s with "syncing time over SNTP". Restore.
-- [ ] **Step 5:** Gate, review, commit: `feat: sync time over SNTP at boot`.
+  (Done with an unresolvable hostname: restart after 30.02 s.)
+- [x] **Step 5:** Gate, review, commit: `feat: sync time over SNTP at boot`.
 
 ---
 
