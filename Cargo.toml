@@ -35,7 +35,7 @@ opt-level = "z"
 [dependencies]
 fak-core = { path = "fak-core" }
 log = "0.4"
-esp-idf-svc = { version = "0.53", features = [
+esp-idf-svc = { version = "0.54", features = [
   "critical-section",
   "embassy-time-driver",
 ] }
